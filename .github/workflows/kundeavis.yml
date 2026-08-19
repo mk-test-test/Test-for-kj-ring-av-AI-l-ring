@@ -25,6 +25,41 @@
          - name: Kjør kundeavis-scriptet
            run: python kundeavis_bot.py
 
+         # Kjører Claude Code direkte på runneren (som allerede har full
+         # nettilgang og filene på disk) rett etter at PDF-ene er generert.
+         # Ingen nedlasting nødvendig — Claude leser PDF-ene lokalt her og
+         # skriver funnene sine til jobb-loggen, som kan leses etterpå via
+         # GitHub sitt API (f.eks. av en Claude Code-økt et annet sted).
+         # Krever at repo-secreten ANTHROPIC_API_KEY er satt opp
+         # (Settings → Secrets and variables → Actions → New repository
+         # secret). continue-on-error: hvis secreten mangler eller
+         # verifiseringen feiler, skal ikke selve kundeavis-jobben stoppes.
+         - name: Verifiser kundeaviser med Claude
+           uses: anthropics/claude-code-action@v1
+           continue-on-error: true
+           with:
+             anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+             prompt: |
+               Finn den nyeste ukesmappen under kundeaviser/ (mønster
+               kundeaviser/ÅÅÅÅ-ukeNN/) og les _status.json der for å se
+               hvilke kjeder som ble markert "ok".
+
+               For hver PDF-fil som er markert "ok": åpne PDF-en med
+               Read-verktøyet og vurder om innholdet faktisk ser ut som en
+               ekte, flersidig norsk dagligvare-kundeavis (priser, produkter,
+               kjedens logo/navn) — ikke en tom, feilrendret eller
+               cookie-banner-blokkert side. Noter omtrent hvor mange sider
+               som har reelt tilbudsinnhold.
+
+               Skriv til slutt en kort, strukturert rapport til stdout — én
+               linje per kjede i formatet:
+               "KJEDE=<nøkkel> SIDER=<antall> OK=<ja/nei> KOMMENTAR=<kort forklaring>"
+               etterfulgt av en total oppsummeringslinje. Ikke gjør noen
+               filendringer eller commits — dette er kun en lese-verifisering.
+             claude_args: |
+               --allowedTools "Read,Glob,Bash(ls:*),Bash(cat:*)"
+               --max-turns 20
+
          - name: Last opp resultatet som nedlastbar pakke
            uses: actions/upload-artifact@v4
            with:
