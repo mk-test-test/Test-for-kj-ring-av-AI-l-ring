@@ -19,7 +19,7 @@
 
          - name: Installer avhengigheter
            run: |
-             pip install requests beautifulsoup4 playwright
+             pip install requests beautifulsoup4 playwright Pillow
              playwright install --with-deps chromium
 
          - name: Kjør kundeavis-scriptet
