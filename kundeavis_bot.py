@@ -29,7 +29,14 @@ KJENTE BEGRENSNINGER
    dem sammen til én PDF. Si fra hvis du vil ha hjelp til å bygge den biten.
 2. Selectorene i "postnummer_form"-strategien (søkefelt, butikk-liste) er
    IKKE verifisert og må trolig justeres.
-3. Respekter robots.txt og bruksvilkår for hver side. Dette scriptet gjør
+3. accept_cookies() prøver kjente CMP-selectorer (OneTrust, Cookiebot,
+   Cookie Information, Usercentrics) og et generisk tekstsøk etter
+   "Godta/Aksepter/Tillat alle". Den er testet mot syntetiske testsider som
+   etterligner disse banner-mønstrene, men IKKE mot de faktiske
+   kjede-nettstedene (se nettverksbegrensning under). Treffer den ikke
+   riktig knapp på en gitt side, må selectoren/teksten legges til i listen
+   etter å ha inspisert banneret i nettleseren (F12 → Inspiser).
+4. Respekter robots.txt og bruksvilkår for hver side. Dette scriptet gjør
    kun ett forsøk per kjede per kjøring og bør ikke kjøres oftere enn
    nødvendig (default: ukentlig).
 
@@ -76,7 +83,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # ---------------------------------------------------------------------------
 
 REGION_NAVN = "Stavanger"
-POSTNUMMER = "4006"  # <-- juster til ditt nøyaktige postnummer i Stavanger
+POSTNUMMER = "4027"  # <-- juster til ditt nøyaktige postnummer i Stavanger
 
 OUTPUT_ROOT = Path("kundeaviser")
 MIN_PDF_SIZE_BYTES = 100_000  # ~100 KB — enkel sanity-sjekk av nedlastet fil
@@ -190,6 +197,54 @@ def find_pdf_link_in_html(html: str, base_url: str) -> Optional[str]:
     return chosen
 
 
+def accept_cookies(page) -> None:
+    """Best-effort-lukking av samtykkebanner for informasjonskapsler.
+    Norske dagligvarekjeder bruker typisk en av de store CMP-leverandørene
+    (OneTrust, Cookiebot, Cookie Information/Cookiebilling, TrustArc/Usercentrics)
+    eller en egendefinert banner. Uten en akseptert cookie-banner blokkerer
+    mange sider innholdet bak et halvgjennomsiktig overlay, så tilbudene i
+    kundeavisen aldri vises for "browser_print"-strategien.
+
+    Prøver kjente CMP-selectorer først (raskest og mest presist), og faller
+    så tilbake på generisk tekstsøk etter "Godta"/"Aksepter"/"Tillat"-knapper.
+    Feiler stille (banneret finnes rett og slett ikke på alle sider)."""
+    kjente_cmp_selectorer = [
+        "#onetrust-accept-btn-handler",                              # OneTrust
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",    # Cookiebot
+        "#CybotCookiebotDialogBodyButtonAccept",                     # Cookiebot (enkel variant)
+        "#coiConsentBannerAccept",                                   # Cookie Information
+        ".coi-banner__accept",                                       # Cookie Information (alt.)
+        "#accept-all-cookies",
+        "button[data-testid='cookie-accept-all']",
+        "button[data-testid='uc-accept-all-button']",                # Usercentrics
+        "button[id*='accept' i][id*='cookie' i]",
+    ]
+    for selector in kjente_cmp_selectorer:
+        try:
+            knapp = page.locator(selector).first
+            if knapp.count() > 0 and knapp.is_visible(timeout=1000):
+                knapp.click(timeout=2000)
+                page.wait_for_timeout(500)
+                return
+        except Exception:
+            continue
+
+    tekst_alternativer = [
+        "Godta alle", "Godta alle cookies", "Godta alle informasjonskapsler",
+        "Aksepter alle", "Aksepter alle cookies", "Tillat alle",
+        "Aksepter", "Godta", "Tillat alle cookies",
+    ]
+    for tekst in tekst_alternativer:
+        try:
+            knapp = page.get_by_role("button", name=tekst, exact=False).first
+            if knapp.count() > 0 and knapp.is_visible(timeout=1000):
+                knapp.click(timeout=2000)
+                page.wait_for_timeout(500)
+                return
+        except Exception:
+            continue
+
+
 def _chromium_launch_kwargs() -> dict:
     """Playwrights normale `playwright install chromium` legger nettleseren
     under PLAYWRIGHT_BROWSERS_PATH med et revisjonsnummer som må matche
@@ -237,9 +292,7 @@ def strategy_browser_print(chain: Chain, dest: Path) -> bool:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
             page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
-            # TODO/VERIFISER: enkelte sider krever at man lukker en
-            # cookie-banner før innholdet vises korrekt, f.eks.:
-            # page.click("text=Godta alle", timeout=5000)
+            accept_cookies(page)
             page.pdf(path=str(dest), format="A4", print_background=True)
             browser.close()
         return validate_pdf(dest)
@@ -260,6 +313,7 @@ def strategy_postnummer_form(chain: Chain, dest: Path) -> bool:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
             page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
+            accept_cookies(page)
 
             # TODO/VERIFISER: bytt ut med faktisk selector for søkefeltet
             SOK_FELT_SELECTOR = "input[type='search'], input[placeholder*='postnummer' i]"
