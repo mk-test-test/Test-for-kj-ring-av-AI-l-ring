@@ -120,7 +120,14 @@ CHAINS = [
         key="rema1000",
         display_name="REMA 1000",
         landing_url="https://rema.no/kundeavis",  # bekreftet URL (aug. 2026)
-        mode="postnummer_form",
+        # Diagnostisert mot ekte side (aug. 2026, GitHub Actions-runner):
+        # siden har IKKE noe postnummer-/butikksøkefelt — eneste input er
+        # et generelt nettstedsøk (id="algolia-search-input", placeholder
+        # "Søk på rema.no", type="text"). "postnummer_form" matchet derfor
+        # aldri noe og timet ut. Bytt tilbake til "postnummer_form" og
+        # oppdater fallback_url + search_query hvis REMA på nytt begynner å
+        # kreve butikkvalg på denne siden.
+        mode="browser_print",
         fallback_url="https://mattilbud.no/kundeaviser/rema-1000-no",
     ),
     Chain(
@@ -413,8 +420,11 @@ def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
     (tidl. ShopGun) sin kundeavis-plattform, som viser hver kjedes
     kundeavis på en fast URL (f.eks. mattilbud.no/kundeaviser/kiwi-no).
     URL-ene i chain.fallback_url er bekreftet å eksistere (funnet via
-    websøk), men selve JSON-/bilde-strukturen på siden er IKKE verifisert
-    i dette miljøet (ingen nettverkstilgang til mattilbud.no herfra).
+    websøk). mattilbud.no er en JS-tung SPA — diagnostisert mot ekte side
+    (aug. 2026): rett etter "networkidle" var page.content() bare ~500
+    tegn (en tom skjelett-side), altså ikke ferdig rendret ennå. Derfor en
+    ekstra fast ventetid før vi leser innholdet, i tillegg til
+    "networkidle".
 
     Prøver i rekkefølge: (1) en direkte PDF-lenke på siden, (2) en serie
     sidebilder funnet av find_page_image_urls_in_html() satt sammen til én
@@ -429,6 +439,7 @@ def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
             page = browser.new_page()
             page.goto(chain.fallback_url, timeout=30_000, wait_until="networkidle")
             dismiss_cookie_banner(page)
+            page.wait_for_timeout(4000)  # la SPA-en rekke å rendre innholdet
             html = page.content()
             browser.close()
     except Exception as e:

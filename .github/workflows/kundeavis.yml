@@ -23,15 +23,11 @@
              playwright install --with-deps chromium
 
          - name: Kjør kundeavis-scriptet
-           run: python debug_rema.py
+           run: python kundeavis_bot.py
 
          - name: Last opp resultatet som nedlastbar pakke
-           if: always()
            uses: actions/upload-artifact@v4
            with:
-             name: debug-rema-screenshots
-             path: |
-               debug_rema.png
-               debug_mattilbud_rema.png
-             retention-days: 3
-             if-no-files-found: warn
+             name: kundeaviser
+             path: kundeaviser/
+             retention-days: 14
