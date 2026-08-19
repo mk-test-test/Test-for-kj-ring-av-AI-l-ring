@@ -1,3 +1,8 @@
 kundeaviser/
 __pycache__/
 *.pyc
+
+# Nedlastet/scrapet innhold (skjermbilder, PDF-er) — opphavsrettsbeskyttet
+# markedsføringsmateriell fra kjedene, skal ikke havne i git-historikken.
+debug_*.png
+*.pdf
