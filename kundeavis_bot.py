@@ -38,6 +38,12 @@ INSTALLASJON
     pip install requests beautifulsoup4 playwright
     playwright install chromium
 
+    Hvis "playwright install chromium" ikke får lastet ned nettleseren
+    (f.eks. i et sandkasse-/CI-miljø med begrenset nettverkstilgang) og det
+    allerede finnes en forhåndsinstallert Chromium under
+    $PLAYWRIGHT_BROWSERS_PATH/chromium, oppdager scriptet det automatisk og
+    bruker den i stedet (se _chromium_launch_kwargs()).
+
 KJØRING
 --------
     python kundeavis_bot.py
@@ -53,6 +59,7 @@ PLANLAGT KJØRING — Windows (Task Scheduler):
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -183,6 +190,22 @@ def find_pdf_link_in_html(html: str, base_url: str) -> Optional[str]:
     return chosen
 
 
+def _chromium_launch_kwargs() -> dict:
+    """Playwrights normale `playwright install chromium` legger nettleseren
+    under PLAYWRIGHT_BROWSERS_PATH med et revisjonsnummer som må matche
+    den installerte playwright-pakken nøyaktig. I enkelte miljøer (f.eks.
+    sandkasser med begrenset nettverkstilgang) ligger det i stedet en
+    forhåndsinstallert Chromium på en fast sti under samme mappe, med en
+    `chromium`-symlink som peker på den faktiske kjørbare filen. Bruk den
+    hvis den finnes, ellers la Playwright bruke sin vanlige oppdagelse."""
+    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if browsers_path:
+        candidate = Path(browsers_path) / "chromium"
+        if candidate.exists():
+            return {"executable_path": str(candidate)}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # NEDLASTINGSSTRATEGIER
 # ---------------------------------------------------------------------------
@@ -211,7 +234,7 @@ def strategy_browser_print(chain: Chain, dest: Path) -> bool:
     øverst i filen)."""
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
             page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
             # TODO/VERIFISER: enkelte sider krever at man lukker en
@@ -234,7 +257,7 @@ def strategy_postnummer_form(chain: Chain, dest: Path) -> bool:
     etter å ha inspisert siden i nettleseren (F12 → Inspiser)."""
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
             page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
 
