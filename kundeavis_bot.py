@@ -29,13 +29,15 @@ KJENTE BEGRENSNINGER
    dem sammen til én PDF. Si fra hvis du vil ha hjelp til å bygge den biten.
 2. Selectorene i "postnummer_form"/"butikksok_form"-strategien (søkefelt,
    butikk-liste) er IKKE verifisert og må trolig justeres.
-3. accept_cookies() prøver kjente CMP-selectorer (OneTrust, Cookiebot,
-   Cookie Information, Usercentrics) og et generisk tekstsøk etter
-   "Godta/Aksepter/Tillat alle". Den er testet mot syntetiske testsider som
-   etterligner disse banner-mønstrene, men IKKE mot de faktiske
-   kjede-nettstedene (se nettverksbegrensning under). Treffer den ikke
-   riktig knapp på en gitt side, må selectoren/teksten legges til i listen
-   etter å ha inspisert banneret i nettleseren (F12 → Inspiser).
+3. dismiss_cookie_banner() prøver flere kjente mønstre (dialog-rolle +
+   "Godta"-knapp, OneTrust, Cookiebot, generisk tekstsøk) og logger tydelig
+   hvilket forsøk som lyktes eller feilet. Som siste utvei fjernes
+   [role="dialog"]-elementer direkte via JavaScript. Den er testet mot
+   syntetiske testsider som etterligner disse banner-mønstrene, men IKKE
+   mot de faktiske kjede-nettstedene (se nettverksbegrensning under).
+   Treffer den ikke riktig knapp på en gitt side, må selectoren/teksten
+   legges til i listen etter å ha inspisert banneret i nettleseren
+   (F12 → Inspiser).
 4. Respekter robots.txt og bruksvilkår for hver side. Dette scriptet gjør
    kun ett forsøk per kjede per kjøring og bør ikke kjøres oftere enn
    nødvendig (default: ukentlig).
@@ -199,52 +201,44 @@ def find_pdf_link_in_html(html: str, base_url: str) -> Optional[str]:
     return chosen
 
 
-def accept_cookies(page) -> None:
-    """Best-effort-lukking av samtykkebanner for informasjonskapsler.
-    Norske dagligvarekjeder bruker typisk en av de store CMP-leverandørene
-    (OneTrust, Cookiebot, Cookie Information/Cookiebilling, TrustArc/Usercentrics)
-    eller en egendefinert banner. Uten en akseptert cookie-banner blokkerer
-    mange sider innholdet bak et halvgjennomsiktig overlay, så tilbudene i
-    kundeavisen aldri vises for "browser_print"-strategien.
+def dismiss_cookie_banner(page) -> bool:
+    """Prøver å lukke cookie-samtykke-banneret på flere måter, og logger
+    tydelig hva som skjer i stedet for å feile stille."""
+    page.wait_for_timeout(1500)  # gi banneret tid til å rekke å tegnes opp
 
-    Prøver kjente CMP-selectorer først (raskest og mest presist), og faller
-    så tilbake på generisk tekstsøk etter "Godta"/"Aksepter"/"Tillat"-knapper.
-    Feiler stille (banneret finnes rett og slett ikke på alle sider)."""
-    kjente_cmp_selectorer = [
-        "#onetrust-accept-btn-handler",                              # OneTrust
-        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",    # Cookiebot
-        "#CybotCookiebotDialogBodyButtonAccept",                     # Cookiebot (enkel variant)
-        "#coiConsentBannerAccept",                                   # Cookie Information
-        ".coi-banner__accept",                                       # Cookie Information (alt.)
-        "#accept-all-cookies",
-        "button[data-testid='cookie-accept-all']",
-        "button[data-testid='uc-accept-all-button']",                # Usercentrics
-        "button[id*='accept' i][id*='cookie' i]",
+    attempts = [
+        lambda: page.get_by_role("dialog").get_by_role("button", name="Godta", exact=False),
+        lambda: page.get_by_role("button", name="Godta", exact=False),
+        lambda: page.get_by_role("button", name="Kun nødvendige", exact=False),
+        lambda: page.locator("button:has-text('Godta')"),
+        lambda: page.locator("#onetrust-accept-btn-handler"),
+        lambda: page.locator("#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"),
     ]
-    for selector in kjente_cmp_selectorer:
+
+    for i, get_locator in enumerate(attempts):
         try:
-            knapp = page.locator(selector).first
-            if knapp.count() > 0 and knapp.is_visible(timeout=1000):
-                knapp.click(timeout=2000)
-                page.wait_for_timeout(500)
-                return
-        except Exception:
+            locator = get_locator().first
+            if locator.count() == 0:
+                continue
+            locator.wait_for(state="visible", timeout=3000)
+            locator.click(timeout=3000, force=True)
+            page.wait_for_timeout(1000)
+            logging.info(f"Cookie-banner lukket med forsøk #{i}")
+            return True
+        except Exception as e:
+            logging.info(f"Forsøk #{i} feilet: {e}")
             continue
 
-    tekst_alternativer = [
-        "Godta alle", "Godta alle cookies", "Godta alle informasjonskapsler",
-        "Aksepter alle", "Aksepter alle cookies", "Tillat alle",
-        "Aksepter", "Godta", "Tillat alle cookies",
-    ]
-    for tekst in tekst_alternativer:
-        try:
-            knapp = page.get_by_role("button", name=tekst, exact=False).first
-            if knapp.count() > 0 and knapp.is_visible(timeout=1000):
-                knapp.click(timeout=2000)
-                page.wait_for_timeout(500)
-                return
-        except Exception:
-            continue
+    # Siste utvei: fjern selve dialog-elementet direkte fra siden med JavaScript,
+    # uansett hvilken knappetekst det bruker
+    try:
+        page.evaluate("document.querySelectorAll('[role=\"dialog\"]').forEach(el => el.remove())")
+        page.wait_for_timeout(500)
+        logging.info("Fjernet dialog-element direkte via JavaScript (brute force).")
+        return True
+    except Exception as e:
+        logging.warning(f"Klarte ikke å fjerne banneret i det hele tatt: {e}")
+        return False
 
 
 def _chromium_launch_kwargs() -> dict:
@@ -294,7 +288,7 @@ def strategy_browser_print(chain: Chain, dest: Path) -> bool:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
             page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
-            accept_cookies(page)
+            dismiss_cookie_banner(page)
             page.pdf(path=str(dest), format="A4", print_background=True)
             browser.close()
         return validate_pdf(dest)
@@ -319,7 +313,7 @@ def strategy_sok_og_velg_butikk(chain: Chain, dest: Path) -> bool:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
             page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
-            accept_cookies(page)
+            dismiss_cookie_banner(page)
 
             # TODO/VERIFISER: bytt ut med faktisk selector for søkefeltet
             SOK_FELT_SELECTOR = (
