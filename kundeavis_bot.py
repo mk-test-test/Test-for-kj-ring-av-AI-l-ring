@@ -27,8 +27,8 @@ KJENTE BEGRENSNINGER
    alle sidene i avisen. For å fange ALLE sidene trengs en mer avansert
    løsning som blar side for side og tar skjermbilde av hver, for så å slå
    dem sammen til én PDF. Si fra hvis du vil ha hjelp til å bygge den biten.
-2. Selectorene i "postnummer_form"-strategien (søkefelt, butikk-liste) er
-   IKKE verifisert og må trolig justeres.
+2. Selectorene i "postnummer_form"/"butikksok_form"-strategien (søkefelt,
+   butikk-liste) er IKKE verifisert og må trolig justeres.
 3. accept_cookies() prøver kjente CMP-selectorer (OneTrust, Cookiebot,
    Cookie Information, Usercentrics) og et generisk tekstsøk etter
    "Godta/Aksepter/Tillat alle". Den er testet mot syntetiske testsider som
@@ -97,8 +97,9 @@ class Chain:
     key: str                    # brukt i filnavn, f.eks. "rema1000"
     display_name: str           # f.eks. "REMA 1000"
     landing_url: str            # siden vi starter på
-    mode: str                   # "direct_pdf_scan" | "browser_print" | "postnummer_form"
+    mode: str                   # "direct_pdf_scan" | "browser_print" | "postnummer_form" | "butikksok_form"
     fallback_url: Optional[str] = None  # tredjeparts-kilde hvis primær feiler
+    search_query: Optional[str] = None  # brukt av "butikksok_form" — by/butikknavn å søke etter
 
 
 CHAINS = [
@@ -141,8 +142,9 @@ CHAINS = [
         key="bunnpris",
         display_name="Bunnpris",
         landing_url="https://bunnpris.no/",  # TODO/VERIFISER
-        mode="browser_print",
+        mode="butikksok_form",  # krever by/butikknavn før riktig kundeavis vises
         fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Bunnpris",
+        search_query=REGION_NAVN,  # "Stavanger"
     ),
 ]
 
@@ -304,10 +306,14 @@ def strategy_browser_print(chain: Chain, dest: Path) -> bool:
         return False
 
 
-def strategy_postnummer_form(chain: Chain, dest: Path) -> bool:
-    """For kjeder (som REMA 1000) der man må søke opp postnummer/butikk før
-    kundeavisen vises. Selectorene under er IKKE verifisert og MÅ justeres
-    etter å ha inspisert siden i nettleseren (F12 → Inspiser)."""
+def strategy_sok_og_velg_butikk(chain: Chain, dest: Path) -> bool:
+    """For kjeder (som REMA 1000 og Bunnpris) der man må søke opp butikk —
+    via postnummer eller via by-/butikknavn — før riktig lokal kundeavis
+    vises. Søketeksten er chain.search_query hvis satt (f.eks. "Stavanger"
+    for Bunnpris), ellers POSTNUMMER som standard (REMA 1000). Selectorene
+    under er IKKE verifisert og MÅ justeres etter å ha inspisert siden i
+    nettleseren (F12 → Inspiser)."""
+    query = chain.search_query or POSTNUMMER
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
@@ -316,8 +322,14 @@ def strategy_postnummer_form(chain: Chain, dest: Path) -> bool:
             accept_cookies(page)
 
             # TODO/VERIFISER: bytt ut med faktisk selector for søkefeltet
-            SOK_FELT_SELECTOR = "input[type='search'], input[placeholder*='postnummer' i]"
-            page.fill(SOK_FELT_SELECTOR, POSTNUMMER)
+            SOK_FELT_SELECTOR = (
+                "input[type='search'], "
+                "input[placeholder*='postnummer' i], "
+                "input[placeholder*='butikk' i], "
+                "input[placeholder*='sted' i], "
+                "input[placeholder*='by' i]"
+            )
+            page.fill(SOK_FELT_SELECTOR, query)
             page.keyboard.press("Enter")
             page.wait_for_timeout(2000)
 
@@ -331,7 +343,7 @@ def strategy_postnummer_form(chain: Chain, dest: Path) -> bool:
             browser.close()
         return validate_pdf(dest)
     except Exception as e:
-        logging.warning(f"[{chain.display_name}] Postnummer-flyt feilet: {e}")
+        logging.warning(f"[{chain.display_name}] Butikksøk-flyt feilet ({query!r}): {e}")
         return False
 
 
@@ -346,7 +358,8 @@ def strategy_fallback(chain: Chain, dest: Path) -> bool:
 STRATEGIES = {
     "direct_pdf_scan": strategy_direct_pdf_scan,
     "browser_print": strategy_browser_print,
-    "postnummer_form": strategy_postnummer_form,
+    "postnummer_form": strategy_sok_og_velg_butikk,
+    "butikksok_form": strategy_sok_og_velg_butikk,
 }
 
 # ---------------------------------------------------------------------------
