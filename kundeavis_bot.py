@@ -24,9 +24,15 @@ KJENTE BEGRENSNINGER
    hvert som man blar, som en presentasjon — ikke som ett langt dokument.
    "browser_print"-strategien under (skriv siden ut til PDF via headless
    nettleser) fanger da ofte KUN gjeldende visning/side, ikke nødvendigvis
-   alle sidene i avisen. For å fange ALLE sidene trengs en mer avansert
-   løsning som blar side for side og tar skjermbilde av hver, for så å slå
-   dem sammen til én PDF. Si fra hvis du vil ha hjelp til å bygge den biten.
+   alle sidene i avisen.
+   Fallback-strategien strategy_mattilbud() (se KJENTE BEGRENSNINGER #1b)
+   forsøker å løse dette ved å hente mattilbud.no i stedet (som også
+   kjører på Tjek/ShopGun) og se etter en serie sidebilder i en innebygd
+   JSON-blokk på siden, som så settes sammen til én flersidig PDF med
+   Pillow. Dette er IKKE verifisert mot den faktiske JSON-strukturen (se
+   nettverksbegrensning under) — hvis det ikke finner riktige bilder,
+   faller den videre tilbake til vanlig browser-print (kun gjeldende
+   visning).
 2. Selectorene i "postnummer_form"/"butikksok_form"-strategien (søkefelt,
    butikk-liste) er IKKE verifisert og må trolig justeres.
 3. dismiss_cookie_banner() prøver flere kjente mønstre (dialog-rolle +
@@ -44,7 +50,7 @@ KJENTE BEGRENSNINGER
 
 INSTALLASJON
 -------------
-    pip install requests beautifulsoup4 playwright
+    pip install requests beautifulsoup4 playwright Pillow
     playwright install chromium
 
     Hvis "playwright install chromium" ikke får lastet ned nettleseren
@@ -66,6 +72,7 @@ PLANLAGT KJØRING — Windows (Task Scheduler):
     → Handling: Start et program → python.exe → Argument: full sti til dette scriptet
 """
 
+import io
 import json
 import logging
 import os
@@ -78,6 +85,7 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from PIL import Image
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ---------------------------------------------------------------------------
@@ -100,52 +108,55 @@ class Chain:
     display_name: str           # f.eks. "REMA 1000"
     landing_url: str            # siden vi starter på
     mode: str                   # "direct_pdf_scan" | "browser_print" | "postnummer_form" | "butikksok_form"
-    fallback_url: Optional[str] = None  # tredjeparts-kilde hvis primær feiler
+    fallback_url: Optional[str] = None  # mattilbud.no-siden for kjeden, brukt som fallback hvis primær feiler
     search_query: Optional[str] = None  # brukt av "butikksok_form" — by/butikknavn å søke etter
 
 
+# Fallback-kilde: mattilbud.no (kjører på Tjek/tidl. ShopGun sin kundeavis-
+# plattform). URL-ene under er bekreftet å eksistere (funnet via websøk,
+# ikke gjettet) — se strategy_mattilbud() for hvordan siden faktisk hentes.
 CHAINS = [
     Chain(
         key="rema1000",
         display_name="REMA 1000",
         landing_url="https://rema.no/kundeavis",  # bekreftet URL (aug. 2026)
         mode="postnummer_form",
-        fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Rema%201000",
+        fallback_url="https://mattilbud.no/kundeaviser/rema-1000-no",
     ),
     Chain(
         key="kiwi",
         display_name="KIWI",
         landing_url="https://kiwi.no/",  # bekreftet domene — TODO/VERIFISER riktig understi (tilbud/kundeavis)
         mode="direct_pdf_scan",  # KIWI har historisk publisert direkte PDF-lenker (kiwi.no/globalassets/kundeavis-...)
-        fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Kiwi",
+        fallback_url="https://mattilbud.no/kundeaviser/kiwi-no",
     ),
     Chain(
         key="coop-extra",
         display_name="Coop Extra",
         landing_url="https://coop.no/",  # TODO/VERIFISER riktig understi for kundeavis
         mode="browser_print",
-        fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Coop%20Extra",
+        fallback_url="https://mattilbud.no/kundeaviser/extra-no",
     ),
     Chain(
         key="meny",
         display_name="Meny",
         landing_url="https://meny.no/",  # TODO/VERIFISER
         mode="browser_print",
-        fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Meny",
+        fallback_url="https://mattilbud.no/kundeaviser/meny-no",
     ),
     Chain(
         key="spar",
         display_name="Spar",
         landing_url="https://spar.no/",  # TODO/VERIFISER
         mode="browser_print",
-        fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Spar",
+        fallback_url="https://mattilbud.no/kundeaviser/spar-no",
     ),
     Chain(
         key="bunnpris",
         display_name="Bunnpris",
         landing_url="https://bunnpris.no/",  # TODO/VERIFISER
         mode="butikksok_form",  # krever by/butikknavn før riktig kundeavis vises
-        fallback_url="https://www.tilbudsuken.no/kundeavis/Dagligvarer/Bunnpris",
+        fallback_url="https://mattilbud.no/kundeaviser/bunnpris-no",
         search_query=REGION_NAVN,  # "Stavanger"
     ),
 ]
@@ -199,6 +210,61 @@ def find_pdf_link_in_html(html: str, base_url: str) -> Optional[str]:
     elif chosen.startswith("/"):
         chosen = urljoin(base_url, chosen)
     return chosen
+
+
+def find_page_image_urls_in_html(html: str) -> list:
+    """Best-effort-forsøk på å finne en serie sidebilder for en kundeavis
+    fra en "digital avis"-plattform (f.eks. Tjek/tidl. ShopGun, som ligger
+    bak mattilbud.no). Slike plattformer legger ofte katalogens sidebilder
+    som en liste med bilde-URLer i en innebygd JSON-blokk på siden.
+
+    Dette er en GENERISK heuristikk — IKKE verifisert mot den faktiske
+    JSON-strukturen til noen bestemt plattform (ingen nettverkstilgang til
+    mattilbud.no i miljøet dette ble skrevet i). Den leter etter alle
+    bilde-URLer i HTML-en, grupperer dem etter "mønster" (samme URL med
+    tall erstattet av #), og returnerer den største gruppen — siden
+    sidebilder typisk deler samme sti/CDN og bare varierer i et tall
+    (side- eller bilde-ID). Hvis dette ikke finner riktige bilder på en
+    gitt side, må logikken justeres etter å ha inspisert siden i
+    nettleseren (F12 → Network/Sources)."""
+    urls = re.findall(r'https?://[^\s"\'\\]+\.(?:jpe?g|png|webp)(?:\?[^\s"\'\\]*)?', html, re.IGNORECASE)
+    if not urls:
+        return []
+
+    grupper = {}
+    for url in urls:
+        monster = re.sub(r"\d+", "#", url)
+        grupper.setdefault(monster, [])
+        if url not in grupper[monster]:
+            grupper[monster].append(url)
+
+    storste_gruppe = max(grupper.values(), key=len)
+    return storste_gruppe if len(storste_gruppe) >= 2 else []
+
+
+def images_to_pdf(image_urls: list, dest: Path) -> bool:
+    """Laster ned en liste med bilde-URLer i rekkefølge og slår dem sammen
+    til én PDF (ett bilde per side). Brukes når kundeavisen leveres som en
+    serie sidebilder i stedet for én ferdig PDF-fil."""
+    bilder = []
+    url = None
+    try:
+        for url in image_urls:
+            r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            bilder.append(Image.open(io.BytesIO(r.content)).convert("RGB"))
+    except Exception as e:
+        logging.warning(f"Kunne ikke laste ned sidebilde ({url}): {e}")
+        return False
+
+    if not bilder:
+        return False
+    try:
+        bilder[0].save(str(dest), save_all=True, append_images=bilder[1:])
+    except Exception as e:
+        logging.warning(f"Kunne ikke sette sammen sidebilder til PDF: {e}")
+        return False
+    return validate_pdf(dest)
 
 
 def dismiss_cookie_banner(page) -> bool:
@@ -341,12 +407,57 @@ def strategy_sok_og_velg_butikk(chain: Chain, dest: Path) -> bool:
         return False
 
 
+def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
+    """Henter kundeavisen fra mattilbud.no i stedet for kjedens egen side.
+    mattilbud.no (og søsterplattformen etilbudsavis.no) kjører på Tjek
+    (tidl. ShopGun) sin kundeavis-plattform, som viser hver kjedes
+    kundeavis på en fast URL (f.eks. mattilbud.no/kundeaviser/kiwi-no).
+    URL-ene i chain.fallback_url er bekreftet å eksistere (funnet via
+    websøk), men selve JSON-/bilde-strukturen på siden er IKKE verifisert
+    i dette miljøet (ingen nettverkstilgang til mattilbud.no herfra).
+
+    Prøver i rekkefølge: (1) en direkte PDF-lenke på siden, (2) en serie
+    sidebilder funnet av find_page_image_urls_in_html() satt sammen til én
+    PDF — dette er den interessante biten, siden det kan fange ALLE
+    sidene i avisen i stedet for bare gjeldende visning, (3) vanlig
+    browser-print av siden som siste utvei (kun gjeldende visning)."""
+    if not chain.fallback_url:
+        return False
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(**_chromium_launch_kwargs())
+            page = browser.new_page()
+            page.goto(chain.fallback_url, timeout=30_000, wait_until="networkidle")
+            dismiss_cookie_banner(page)
+            html = page.content()
+            browser.close()
+    except Exception as e:
+        logging.warning(f"[{chain.display_name}] Klarte ikke å laste mattilbud.no: {e}")
+        return False
+
+    pdf_url = find_pdf_link_in_html(html, chain.fallback_url)
+    if pdf_url:
+        logging.info(f"[{chain.display_name}] Fant PDF-lenke på mattilbud.no: {pdf_url}")
+        if download_binary(pdf_url, dest):
+            return True
+
+    bilde_urler = find_page_image_urls_in_html(html)
+    if bilde_urler:
+        logging.info(f"[{chain.display_name}] Fant {len(bilde_urler)} sidebilder på mattilbud.no — setter sammen til PDF.")
+        if images_to_pdf(bilde_urler, dest):
+            return True
+        logging.warning(f"[{chain.display_name}] Klarte ikke å sette sammen sidebildene til PDF.")
+
+    logging.info(f"[{chain.display_name}] Fant verken PDF-lenke eller sidebilder på mattilbud.no — faller tilbake til browser-print (kun gjeldende visning).")
+    temp_chain = Chain(chain.key, chain.display_name, chain.fallback_url, "browser_print")
+    return strategy_browser_print(temp_chain, dest)
+
+
 def strategy_fallback(chain: Chain, dest: Path) -> bool:
     if not chain.fallback_url:
         return False
     logging.info(f"[{chain.display_name}] Prøver fallback-kilde: {chain.fallback_url}")
-    temp_chain = Chain(chain.key, chain.display_name, chain.fallback_url, "browser_print")
-    return strategy_browser_print(temp_chain, dest)
+    return strategy_mattilbud(chain, dest)
 
 
 STRATEGIES = {
