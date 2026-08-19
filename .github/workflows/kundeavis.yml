@@ -1,0 +1,33 @@
+   name: Hent kundeaviser ukentlig
+
+   on:
+     schedule:
+       - cron: "0 5 * * 1"   # Hver mandag kl. 05:00 UTC (ca. 06:00–07:00 norsk tid)
+     workflow_dispatch:        # Lar deg trykke "Run workflow" manuelt for å teste
+
+   jobs:
+     hent-kundeaviser:
+       runs-on: ubuntu-latest
+       steps:
+         - name: Sjekk ut repoet
+           uses: actions/checkout@v4
+
+         - name: Sett opp Python
+           uses: actions/setup-python@v5
+           with:
+             python-version: "3.12"
+
+         - name: Installer avhengigheter
+           run: |
+             pip install requests beautifulsoup4 playwright
+             playwright install --with-deps chromium
+
+         - name: Kjør kundeavis-scriptet
+           run: python kundeavis_bot.py
+
+         - name: Last opp resultatet som nedlastbar pakke
+           uses: actions/upload-artifact@v4
+           with:
+             name: kundeaviser
+             path: kundeaviser/
+             retention-days: 14
