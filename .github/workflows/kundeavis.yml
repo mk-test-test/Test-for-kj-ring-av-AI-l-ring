@@ -30,15 +30,21 @@
          # Ingen nedlasting nødvendig — Claude leser PDF-ene lokalt her og
          # skriver funnene sine til jobb-loggen, som kan leses etterpå via
          # GitHub sitt API (f.eks. av en Claude Code-økt et annet sted).
-         # Krever at repo-secreten ANTHROPIC_API_KEY er satt opp
-         # (Settings → Secrets and variables → Actions → New repository
-         # secret). continue-on-error: hvis secreten mangler eller
-         # verifiseringen feiler, skal ikke selve kundeavis-jobben stoppes.
+         #
+         # Bruker CLAUDE_CODE_OAUTH_TOKEN (Pro/Max-abonnement), IKKE
+         # ANTHROPIC_API_KEY — dermed telles bruken mot det abonnementet du
+         # allerede betaler for, ikke separat pay-per-use API-fakturering.
+         # Generer token lokalt: `claude setup-token` (krever at du er
+         # innlogget med Pro/Max-kontoen din), og legg den inn som
+         # repo-secret CLAUDE_CODE_OAUTH_TOKEN (Settings → Secrets and
+         # variables → Actions → New repository secret).
+         # continue-on-error: hvis secreten mangler eller verifiseringen
+         # feiler, skal ikke selve kundeavis-jobben stoppes.
          - name: Verifiser kundeaviser med Claude
            uses: anthropics/claude-code-action@v1
            continue-on-error: true
            with:
-             anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+             claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
              prompt: |
                Finn den nyeste ukesmappen under kundeaviser/ (mønster
                kundeaviser/ÅÅÅÅ-ukeNN/) og les _status.json der for å se
