@@ -23,7 +23,16 @@
              playwright install --with-deps chromium
 
          - name: Kjør kundeavis-scriptet
-           run: python kundeavis_bot.py
+           run: python debug_bunnpris.py
+
+         - name: Last opp debug-skjermbilde
+           if: always()
+           uses: actions/upload-artifact@v4
+           with:
+             name: debug-bunnpris-screenshot
+             path: debug_bunnpris.png
+             retention-days: 3
+             if-no-files-found: warn
 
          # Kjører Claude Code direkte på runneren (som allerede har full
          # nettilgang og filene på disk) rett etter at PDF-ene er generert.
