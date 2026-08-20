@@ -50,6 +50,27 @@ for kjede, dealer_ids in KANDIDATER.items():
                 pr = requests.get(pdf_url, headers=HEADERS, timeout=20, allow_redirects=True)
                 is_pdf = pr.content[:5] == b"%PDF-"
                 print(f"    PDF-nedlasting: HTTP {pr.status_code}, {len(pr.content)} bytes, gyldig PDF-header: {is_pdf}")
+
+            catalog_id = cat.get("id")
+            pages_url = f"{BASE}/catalogs/{catalog_id}/pages?w=1000"
+            ppr = requests.get(pages_url, headers=HEADERS, timeout=15)
+            print(f"    /pages -> HTTP {ppr.status_code}")
+            if ppr.status_code == 200:
+                pages = ppr.json()
+                print(f"    /pages type={type(pages).__name__} lengde={len(pages) if hasattr(pages, '__len__') else '?'}")
+                print(f"    /pages[0:2] raw={json.dumps(pages[:2], ensure_ascii=False)[:600]}")
+                first_img_url = None
+                if isinstance(pages, list) and pages:
+                    p0 = pages[0]
+                    if isinstance(p0, str):
+                        first_img_url = p0
+                    elif isinstance(p0, dict):
+                        first_img_url = p0.get("view") or p0.get("zoom") or p0.get("image") or p0.get("url")
+                if first_img_url:
+                    ir = requests.get(first_img_url, headers=HEADERS, timeout=15)
+                    print(f"    Nedlasting av side 1-bilde ({first_img_url}): HTTP {ir.status_code}, {len(ir.content)} bytes, content-type={ir.headers.get('content-type')}")
+            else:
+                print("    ", ppr.text[:300])
         except Exception as e:
             print(f"    FEIL: {e}")
 
