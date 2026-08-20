@@ -11,7 +11,7 @@ TJEK_API_BASE = "https://squid-api.tjek.com/v2"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 TARGETS = [
-    ("kiwi", "257bxm"),
+    ("coop-extra", "80742m"),
 ]
 PAGES_PER_CHAIN = 4
 
