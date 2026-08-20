@@ -19,31 +19,26 @@ kjøre, teste og feilsøke det i ditt eget miljø.
 
 KJENTE BEGRENSNINGER
 ---------------------
-1. Flere kjeder viser kundeavisen i en interaktiv "bla-i-avis"-viser
-   (Tjek/ShopGun-teknologi). Slike visere laster ofte sidene dynamisk etter
-   hvert som man blar, som en presentasjon — ikke som ett langt dokument.
-   "browser_print"-strategien under (skriv siden ut til PDF via headless
-   nettleser) fanger da ofte KUN gjeldende visning/side, ikke nødvendigvis
-   alle sidene i avisen.
-   Fallback-strategien strategy_mattilbud() (se KJENTE BEGRENSNINGER #1b)
-   forsøker å løse dette ved å hente mattilbud.no i stedet (som også
-   kjører på Tjek/ShopGun) og se etter en serie sidebilder i en innebygd
-   JSON-blokk på siden, som så settes sammen til én flersidig PDF med
-   Pillow. Dette er IKKE verifisert mot den faktiske JSON-strukturen (se
-   nettverksbegrensning under) — hvis det ikke finner riktige bilder,
-   faller den videre tilbake til vanlig browser-print (kun gjeldende
-   visning).
-2. Selectorene i "postnummer_form"/"butikksok_form"-strategien (søkefelt,
-   butikk-liste) er IKKE verifisert og må trolig justeres.
+1. Primærkilde for ALLE kjeder er mattilbud.no (Tjek/tidl. ShopGun sin
+   kundeavis-plattform) i stedet for kjedenes egne nettsider — se
+   strategy_mattilbud(). Dette ble valgt fordi de enkelte kjedenes egne
+   sider ga upålitelige resultater (feil/manglende butikkvalg, ingen
+   garanti for at innholdet faktisk var Stavanger-relevant). mattilbud.no
+   gir én konsistent kilde for alle kjeder på formen
+   mattilbud.no/kundeaviser/<kjede>-no.
+   mattilbud.no er en JS-tung SPA og kan i tillegg vise kundeavisen som en
+   serie sidebilder i en innebygd JSON-blokk i stedet for én ferdig PDF —
+   strategy_mattilbud() prøver derfor (1) direkte PDF-lenke, (2) sette
+   sammen sidebilder til én flersidig PDF med Pillow, (3) vanlig
+   browser-print av siden (kun gjeldende visning) som siste utvei.
+   Punkt 2 (bilde-heuristikken) er IKKE verifisert mot den faktiske
+   JSON-strukturen på siden.
+2. Kjedens egen offisielle side (chain.fallback_url) brukes kun som
+   fallback hvis mattilbud.no feiler helt, via enkel browser-print.
 3. dismiss_cookie_banner() prøver flere kjente mønstre (dialog-rolle +
    "Godta"-knapp, OneTrust, Cookiebot, generisk tekstsøk) og logger tydelig
    hvilket forsøk som lyktes eller feilet. Som siste utvei fjernes
-   [role="dialog"]-elementer direkte via JavaScript. Den er testet mot
-   syntetiske testsider som etterligner disse banner-mønstrene, men IKKE
-   mot de faktiske kjede-nettstedene (se nettverksbegrensning under).
-   Treffer den ikke riktig knapp på en gitt side, må selectoren/teksten
-   legges til i listen etter å ha inspisert banneret i nettleseren
-   (F12 → Inspiser).
+   [role="dialog"]-elementer direkte via JavaScript.
 4. Respekter robots.txt og bruksvilkår for hver side. Dette scriptet gjør
    kun ett forsøk per kjede per kjøring og bør ikke kjøres oftere enn
    nødvendig (default: ukentlig).
@@ -93,7 +88,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # ---------------------------------------------------------------------------
 
 REGION_NAVN = "Stavanger"
-POSTNUMMER = "4027"  # <-- juster til ditt nøyaktige postnummer i Stavanger
 
 OUTPUT_ROOT = Path("kundeaviser")
 MIN_PDF_SIZE_BYTES = 100_000  # ~100 KB — enkel sanity-sjekk av nedlastet fil
@@ -106,65 +100,50 @@ HEADERS = {"User-Agent": USER_AGENT}
 class Chain:
     key: str                    # brukt i filnavn, f.eks. "rema1000"
     display_name: str           # f.eks. "REMA 1000"
-    landing_url: str            # siden vi starter på
-    mode: str                   # "direct_pdf_scan" | "browser_print" | "postnummer_form" | "butikksok_form"
-    fallback_url: Optional[str] = None  # mattilbud.no-siden for kjeden, brukt som fallback hvis primær feiler
-    search_query: Optional[str] = None  # brukt av "butikksok_form" — by/butikknavn å søke etter
+    mattilbud_url: str          # primærkilde: kjedens side på mattilbud.no
+    fallback_url: Optional[str] = None  # kjedens egen offisielle side, brukt kun hvis mattilbud.no feiler helt
 
 
-# Fallback-kilde: mattilbud.no (kjører på Tjek/tidl. ShopGun sin kundeavis-
-# plattform). URL-ene under er bekreftet å eksistere (funnet via websøk,
-# ikke gjettet) — se strategy_mattilbud() for hvordan siden faktisk hentes.
+# Primærkilde for alle kjeder: mattilbud.no (kjører på Tjek/tidl. ShopGun
+# sin kundeavis-plattform). URL-ene under er bekreftet å eksistere (funnet
+# via websøk, ikke gjettet) — se strategy_mattilbud() for hvordan siden
+# faktisk hentes.
 CHAINS = [
     Chain(
         key="rema1000",
         display_name="REMA 1000",
-        landing_url="https://rema.no/kundeavis",  # bekreftet URL (aug. 2026)
-        # Diagnostisert mot ekte side (aug. 2026, GitHub Actions-runner):
-        # siden har IKKE noe postnummer-/butikksøkefelt — eneste input er
-        # et generelt nettstedsøk (id="algolia-search-input", placeholder
-        # "Søk på rema.no", type="text"). "postnummer_form" matchet derfor
-        # aldri noe og timet ut. Bytt tilbake til "postnummer_form" og
-        # oppdater fallback_url + search_query hvis REMA på nytt begynner å
-        # kreve butikkvalg på denne siden.
-        mode="browser_print",
-        fallback_url="https://mattilbud.no/kundeaviser/rema-1000-no",
+        mattilbud_url="https://mattilbud.no/kundeaviser/rema-1000-no",
+        fallback_url="https://rema.no/kundeavis",
     ),
     Chain(
         key="kiwi",
         display_name="KIWI",
-        landing_url="https://kiwi.no/",  # bekreftet domene — TODO/VERIFISER riktig understi (tilbud/kundeavis)
-        mode="direct_pdf_scan",  # KIWI har historisk publisert direkte PDF-lenker (kiwi.no/globalassets/kundeavis-...)
-        fallback_url="https://mattilbud.no/kundeaviser/kiwi-no",
+        mattilbud_url="https://mattilbud.no/kundeaviser/kiwi-no",
+        fallback_url="https://kiwi.no/",
     ),
     Chain(
         key="coop-extra",
         display_name="Coop Extra",
-        landing_url="https://coop.no/",  # TODO/VERIFISER riktig understi for kundeavis
-        mode="browser_print",
-        fallback_url="https://mattilbud.no/kundeaviser/extra-no",
+        mattilbud_url="https://mattilbud.no/kundeaviser/extra-no",
+        fallback_url="https://coop.no/",
     ),
     Chain(
         key="meny",
         display_name="Meny",
-        landing_url="https://meny.no/",  # TODO/VERIFISER
-        mode="browser_print",
-        fallback_url="https://mattilbud.no/kundeaviser/meny-no",
+        mattilbud_url="https://mattilbud.no/kundeaviser/meny-no",
+        fallback_url="https://meny.no/",
     ),
     Chain(
         key="spar",
         display_name="Spar",
-        landing_url="https://spar.no/",  # TODO/VERIFISER
-        mode="browser_print",
-        fallback_url="https://mattilbud.no/kundeaviser/spar-no",
+        mattilbud_url="https://mattilbud.no/kundeaviser/spar-no",
+        fallback_url="https://spar.no/",
     ),
     Chain(
         key="bunnpris",
         display_name="Bunnpris",
-        landing_url="https://bunnpris.no/",  # TODO/VERIFISER
-        mode="butikksok_form",  # krever by/butikknavn før riktig kundeavis vises
-        fallback_url="https://mattilbud.no/kundeaviser/bunnpris-no",
-        search_query=REGION_NAVN,  # "Stavanger"
+        mattilbud_url="https://mattilbud.no/kundeaviser/bunnpris-no",
+        fallback_url="https://bunnpris.no/",
     ),
 ]
 
@@ -334,25 +313,8 @@ def _chromium_launch_kwargs() -> dict:
 # NEDLASTINGSSTRATEGIER
 # ---------------------------------------------------------------------------
 
-def strategy_direct_pdf_scan(chain: Chain, dest: Path) -> bool:
-    try:
-        r = requests.get(chain.landing_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        logging.warning(f"[{chain.display_name}] Klarte ikke å hente landingsside: {e}")
-        return strategy_browser_print(chain, dest)
-
-    pdf_url = find_pdf_link_in_html(r.text, chain.landing_url)
-    if not pdf_url:
-        logging.info(f"[{chain.display_name}] Fant ingen direkte PDF-lenke — prøver browser-print i stedet.")
-        return strategy_browser_print(chain, dest)
-
-    logging.info(f"[{chain.display_name}] Fant PDF-lenke: {pdf_url}")
-    return download_binary(pdf_url, dest)
-
-
-def strategy_browser_print(chain: Chain, dest: Path) -> bool:
-    """Universalstrategi: rendre siden i en headless nettleser og eksporter
+def strategy_browser_print(url: str, display_name: str, dest: Path) -> bool:
+    """Universalstrategi: rendre en side i en headless nettleser og eksporter
     til PDF. Krever ikke at vi finner en spesifikk PDF-ressurs, men fanger
     ikke nødvendigvis alle sidene i en bla-i-avis-widget (se begrensning
     øverst i filen)."""
@@ -360,66 +322,25 @@ def strategy_browser_print(chain: Chain, dest: Path) -> bool:
         with sync_playwright() as p:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
-            page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
+            page.goto(url, timeout=30_000, wait_until="networkidle")
             dismiss_cookie_banner(page)
             page.pdf(path=str(dest), format="A4", print_background=True)
             browser.close()
         return validate_pdf(dest)
     except PlaywrightTimeout as e:
-        logging.warning(f"[{chain.display_name}] Playwright timeout: {e}")
+        logging.warning(f"[{display_name}] Playwright timeout: {e}")
         return False
     except Exception as e:
-        logging.warning(f"[{chain.display_name}] Browser-print feilet: {e}")
-        return False
-
-
-def strategy_sok_og_velg_butikk(chain: Chain, dest: Path) -> bool:
-    """For kjeder (som REMA 1000 og Bunnpris) der man må søke opp butikk —
-    via postnummer eller via by-/butikknavn — før riktig lokal kundeavis
-    vises. Søketeksten er chain.search_query hvis satt (f.eks. "Stavanger"
-    for Bunnpris), ellers POSTNUMMER som standard (REMA 1000). Selectorene
-    under er IKKE verifisert og MÅ justeres etter å ha inspisert siden i
-    nettleseren (F12 → Inspiser)."""
-    query = chain.search_query or POSTNUMMER
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(**_chromium_launch_kwargs())
-            page = browser.new_page()
-            page.goto(chain.landing_url, timeout=30_000, wait_until="networkidle")
-            dismiss_cookie_banner(page)
-
-            # TODO/VERIFISER: bytt ut med faktisk selector for søkefeltet
-            SOK_FELT_SELECTOR = (
-                "input[type='search'], "
-                "input[placeholder*='postnummer' i], "
-                "input[placeholder*='butikk' i], "
-                "input[placeholder*='sted' i], "
-                "input[placeholder*='by' i]"
-            )
-            page.fill(SOK_FELT_SELECTOR, query)
-            page.keyboard.press("Enter")
-            page.wait_for_timeout(2000)
-
-            # TODO/VERIFISER: klikk første butikk-treff i resultatlisten
-            FORSTE_TREFF_SELECTOR = "[data-testid='store-result'], .store-list-item"
-            if page.locator(FORSTE_TREFF_SELECTOR).count() > 0:
-                page.locator(FORSTE_TREFF_SELECTOR).first.click()
-                page.wait_for_timeout(2000)
-
-            page.pdf(path=str(dest), format="A4", print_background=True)
-            browser.close()
-        return validate_pdf(dest)
-    except Exception as e:
-        logging.warning(f"[{chain.display_name}] Butikksøk-flyt feilet ({query!r}): {e}")
+        logging.warning(f"[{display_name}] Browser-print feilet: {e}")
         return False
 
 
 def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
-    """Henter kundeavisen fra mattilbud.no i stedet for kjedens egen side.
+    """Henter kundeavisen fra mattilbud.no — primærkilden for alle kjeder.
     mattilbud.no (og søsterplattformen etilbudsavis.no) kjører på Tjek
     (tidl. ShopGun) sin kundeavis-plattform, som viser hver kjedes
     kundeavis på en fast URL (f.eks. mattilbud.no/kundeaviser/kiwi-no).
-    URL-ene i chain.fallback_url er bekreftet å eksistere (funnet via
+    URL-ene i chain.mattilbud_url er bekreftet å eksistere (funnet via
     websøk). mattilbud.no er en JS-tung SPA — diagnostisert mot ekte side
     (aug. 2026): rett etter "networkidle" var page.content() bare ~500
     tegn (en tom skjelett-side), altså ikke ferdig rendret ennå. Derfor en
@@ -431,13 +352,11 @@ def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
     PDF — dette er den interessante biten, siden det kan fange ALLE
     sidene i avisen i stedet for bare gjeldende visning, (3) vanlig
     browser-print av siden som siste utvei (kun gjeldende visning)."""
-    if not chain.fallback_url:
-        return False
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(**_chromium_launch_kwargs())
             page = browser.new_page()
-            page.goto(chain.fallback_url, timeout=30_000, wait_until="networkidle")
+            page.goto(chain.mattilbud_url, timeout=30_000, wait_until="networkidle")
             dismiss_cookie_banner(page)
             page.wait_for_timeout(4000)  # la SPA-en rekke å rendre innholdet
             html = page.content()
@@ -446,7 +365,7 @@ def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
         logging.warning(f"[{chain.display_name}] Klarte ikke å laste mattilbud.no: {e}")
         return False
 
-    pdf_url = find_pdf_link_in_html(html, chain.fallback_url)
+    pdf_url = find_pdf_link_in_html(html, chain.mattilbud_url)
     if pdf_url:
         logging.info(f"[{chain.display_name}] Fant PDF-lenke på mattilbud.no: {pdf_url}")
         if download_binary(pdf_url, dest):
@@ -460,23 +379,17 @@ def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
         logging.warning(f"[{chain.display_name}] Klarte ikke å sette sammen sidebildene til PDF.")
 
     logging.info(f"[{chain.display_name}] Fant verken PDF-lenke eller sidebilder på mattilbud.no — faller tilbake til browser-print (kun gjeldende visning).")
-    temp_chain = Chain(chain.key, chain.display_name, chain.fallback_url, "browser_print")
-    return strategy_browser_print(temp_chain, dest)
+    return strategy_browser_print(chain.mattilbud_url, chain.display_name, dest)
 
 
 def strategy_fallback(chain: Chain, dest: Path) -> bool:
+    """Siste utvei hvis mattilbud.no feiler helt: printer kjedens egen
+    offisielle side direkte."""
     if not chain.fallback_url:
         return False
-    logging.info(f"[{chain.display_name}] Prøver fallback-kilde: {chain.fallback_url}")
-    return strategy_mattilbud(chain, dest)
+    logging.info(f"[{chain.display_name}] Prøver fallback-kilde (kjedens egen side): {chain.fallback_url}")
+    return strategy_browser_print(chain.fallback_url, chain.display_name, dest)
 
-
-STRATEGIES = {
-    "direct_pdf_scan": strategy_direct_pdf_scan,
-    "browser_print": strategy_browser_print,
-    "postnummer_form": strategy_sok_og_velg_butikk,
-    "butikksok_form": strategy_sok_og_velg_butikk,
-}
 
 # ---------------------------------------------------------------------------
 # HOVEDLOGIKK
@@ -488,7 +401,6 @@ def run():
     status = {
         "uke": week_label,
         "region": REGION_NAVN,
-        "postnummer": POSTNUMMER,
         "kjort": date.today().isoformat(),
         "resultater": {},
     }
@@ -497,7 +409,7 @@ def run():
         dest = folder / f"{chain.key}_{REGION_NAVN.lower()}_{week_label}_{start_date}_{end_date}.pdf"
         logging.info(f"=== {chain.display_name} ===")
 
-        success = STRATEGIES[chain.mode](chain, dest)
+        success = strategy_mattilbud(chain, dest)
         if not success:
             success = strategy_fallback(chain, dest)
 
@@ -517,7 +429,7 @@ def run():
 def print_report(status: dict):
     ok = [k for k, v in status["resultater"].items() if v["status"] == "ok"]
     feilet = [k for k, v in status["resultater"].items() if v["status"] == "feilet"]
-    print(f"\nKUNDEAVIS-RAPPORT – {status['uke']} ({status['region']}, postnr {status['postnummer']})")
+    print(f"\nKUNDEAVIS-RAPPORT – {status['uke']} ({status['region']})")
     print(f"Kjørt: {status['kjort']}\n")
     print(f"OK ({len(ok)}): {', '.join(ok) if ok else '-'}")
     print(f"Feilet ({len(feilet)}): {', '.join(feilet) if feilet else '-'}")
