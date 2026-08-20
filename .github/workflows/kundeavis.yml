@@ -18,12 +18,10 @@
              python-version: "3.12"
 
          - name: Installer avhengigheter
-           run: |
-             pip install requests beautifulsoup4 playwright Pillow
-             playwright install --with-deps chromium
+           run: pip install requests Pillow
 
          - name: Kjør kundeavis-scriptet
-           run: python debug_tjek_api.py
+           run: python kundeavis_bot.py
 
          # Kjører Claude Code direkte på runneren (som allerede har full
          # nettilgang og filene på disk) rett etter at PDF-ene er generert.

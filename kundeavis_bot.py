@@ -1,58 +1,56 @@
 #!/usr/bin/env python3
 """
-kundeavis_bot.py — Henter norske dagligvarekjeders kundeaviser for Stavanger-
-regionen som PDF, og lagrer dem i en ukesmappe.
+kundeavis_bot.py — Henter norske dagligvarekjeders ukentlige kundeaviser som
+PDF via Tjek (tidl. ShopGun) sitt offentlige REST-API, og lagrer dem i en
+ukesmappe.
 
 VIKTIG — LES FØR BRUK
 ----------------------
-Dette scriptet er et FUNGERENDE UTGANGSPUNKT, ikke en ferdig testet løsning.
-Det er bygget ut fra offentlig informasjon om hvordan kjedene publiserer
-kundeaviser (pr. august 2026), men nettsidene endrer seg jevnlig, og noen
-URL-er/selectorer under er merket "TODO/VERIFISER" fordi de må sjekkes mot
-den faktiske siden i din nettleser (F12 → Inspiser) før de vil fungere
-pålitelig.
+Tidligere versjoner av dette scriptet prøvde å skrape kjedenes egne
+nettsider og mattilbud.no med en headless nettleser (Playwright). Det viste
+seg upålitelig i praksis: cookie-banner, JS-rendring og manglende
+butikkvalg gjorde at "vellykkede" kjøringer ofte ga PDF-er UTEN faktisk
+tilbudsinnhold.
 
-Scriptet kunne IKKE testes mot de faktiske butikk-nettstedene i miljøet der
-denne koden ble skrevet (nettverkstilgangen der er begrenset til
-utviklerdomener som pypi/npm/github, ikke rema.no/kiwi.no osv.). Du må
-kjøre, teste og feilsøke det i ditt eget miljø.
+Ved diagnose av Bunnpris sin butikkside (aug. 2026) ble det oppdaget at
+kjeden bruker Tjek (tidl. ShopGun) sitt offisielle JS-SDK direkte på siden,
+med en synlig, offentlig API-nøkkel og en "business/dealer-ID" i HTML-
+kildekoden. Tjek-plattformens REST-API (squid-api.tjek.com) viste seg å
+være åpent og fungere UTEN egen API-nøkkel. Dealer-ID-ene for de andre 5
+kjedene ble funnet/kryssbekreftet via offentlige, ikke-tilknyttede
+GitHub-prosjekter (bl.a. holgersetten/ukeshandel.no) som bruker samme API.
+
+Alle 6 dealer-ID-ene under er BEKREFTET fungerende (aug. 2026, kjørt fra
+GitHub Actions): hver ga en ekte, aktuell katalog for inneværende uke med
+13–31 sider og 100–239 tilbud, og nedlasting av sidebilder ga gyldige
+JPEG-filer. Se hent_kundeavis() for detaljer om hvordan PDF-en bygges.
 
 KJENTE BEGRENSNINGER
 ---------------------
-1. Primærkilde for ALLE kjeder er mattilbud.no (Tjek/tidl. ShopGun sin
-   kundeavis-plattform) i stedet for kjedenes egne nettsider — se
-   strategy_mattilbud(). Dette ble valgt fordi de enkelte kjedenes egne
-   sider ga upålitelige resultater (feil/manglende butikkvalg, ingen
-   garanti for at innholdet faktisk var Stavanger-relevant). mattilbud.no
-   gir én konsistent kilde for alle kjeder på formen
-   mattilbud.no/kundeaviser/<kjede>-no.
-   mattilbud.no er en JS-tung SPA og kan i tillegg vise kundeavisen som en
-   serie sidebilder i en innebygd JSON-blokk i stedet for én ferdig PDF —
-   strategy_mattilbud() prøver derfor (1) direkte PDF-lenke, (2) sette
-   sammen sidebilder til én flersidig PDF med Pillow, (3) vanlig
-   browser-print av siden (kun gjeldende visning) som siste utvei.
-   Punkt 2 (bilde-heuristikken) er IKKE verifisert mot den faktiske
-   JSON-strukturen på siden.
-2. Kjedens egen offisielle side (chain.fallback_url) brukes kun som
-   fallback hvis mattilbud.no feiler helt, via enkel browser-print.
-3. dismiss_cookie_banner() prøver flere kjente mønstre (dialog-rolle +
-   "Godta"-knapp, OneTrust, Cookiebot, generisk tekstsøk) og logger tydelig
-   hvilket forsøk som lyktes eller feilet. Som siste utvei fjernes
-   [role="dialog"]-elementer direkte via JavaScript.
-4. Respekter robots.txt og bruksvilkår for hver side. Dette scriptet gjør
-   kun ett forsøk per kjede per kjøring og bør ikke kjøres oftere enn
-   nødvendig (default: ukentlig).
+1. Tjek-APIet gir ÉN kundeavis per dealer_id — det er ikke nødvendigvis
+   butikk-/postnummer-spesifikt. For de fleste norske kjeder er den
+   ukentlige kundeavisen uansett lik for hele landet eller store regioner,
+   men dette scriptet garanterer IKKE at innholdet er 100 % identisk med
+   det som henger i en bestemt Stavanger-butikk. REGION_NAVN brukes derfor
+   kun som et menneskelesbart navn i mappe-/filnavn, ikke som en reell
+   filtrering på Tjek-siden.
+2. De fleste kataloger mangler et fungerende pdf_url-felt (returnerer
+   404 ved nedlasting) — sannsynligvis fordi de er i Tjek sitt nyere
+   "incito"-format (responsivt, ikke fast PDF-layout) i stedet for
+   "paged". Scriptet håndterer dette automatisk ved å hente alle
+   sidebildene enkeltvis (/catalogs/{id}/pages) og sette dem sammen til
+   én PDF med Pillow.
+3. Dette er et offentlig, men uoffisielt/udokumentert API uten API-nøkkel.
+   Det kan endre seg eller bli stengt uten varsel. Bruk skånsomt (ett
+   forsøk per kjede per kjøring, default ukentlig) og ikke for annet enn
+   privat bruk.
+4. dealer_id for REMA 1000 (faa0Ym) er verifisert å gi norskspråklige
+   "Uke NN"-kataloger. En alternativ ID funnet i samme kilde (11deC) ga en
+   dansk("Uge NN")-katalog og er IKKE brukt her.
 
 INSTALLASJON
 -------------
-    pip install requests beautifulsoup4 playwright Pillow
-    playwright install chromium
-
-    Hvis "playwright install chromium" ikke får lastet ned nettleseren
-    (f.eks. i et sandkasse-/CI-miljø med begrenset nettverkstilgang) og det
-    allerede finnes en forhåndsinstallert Chromium under
-    $PLAYWRIGHT_BROWSERS_PATH/chromium, oppdager scriptet det automatisk og
-    bruker den i stedet (se _chromium_launch_kwargs()).
+    pip install requests Pillow
 
 KJØRING
 --------
@@ -70,81 +68,45 @@ PLANLAGT KJØRING — Windows (Task Scheduler):
 import io
 import json
 import logging
-import os
-import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
 from PIL import Image
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ---------------------------------------------------------------------------
 # KONFIG
 # ---------------------------------------------------------------------------
 
-REGION_NAVN = "Stavanger"
+REGION_NAVN = "Stavanger"  # kun et menneskelesbart navn i mappe-/filnavn — se KJENTE BEGRENSNINGER #1
 
 OUTPUT_ROOT = Path("kundeaviser")
-MIN_PDF_SIZE_BYTES = 100_000  # ~100 KB — enkel sanity-sjekk av nedlastet fil
+MIN_PDF_SIZE_BYTES = 100_000  # ~100 KB — enkel sanity-sjekk av ferdig PDF
 REQUEST_TIMEOUT = 20
-USER_AGENT = "Mozilla/5.0 (compatible; KundeavisBot/1.0; privat bruk)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 HEADERS = {"User-Agent": USER_AGENT}
+
+TJEK_API_BASE = "https://squid-api.tjek.com/v2"
 
 
 @dataclass
 class Chain:
     key: str                    # brukt i filnavn, f.eks. "rema1000"
     display_name: str           # f.eks. "REMA 1000"
-    mattilbud_url: str          # primærkilde: kjedens side på mattilbud.no
-    fallback_url: Optional[str] = None  # kjedens egen offisielle side, brukt kun hvis mattilbud.no feiler helt
+    dealer_id: str              # Tjek/ShopGun sin dealer-ID for kjeden
 
 
-# Primærkilde for alle kjeder: mattilbud.no (kjører på Tjek/tidl. ShopGun
-# sin kundeavis-plattform). URL-ene under er bekreftet å eksistere (funnet
-# via websøk, ikke gjettet) — se strategy_mattilbud() for hvordan siden
-# faktisk hentes.
+# Dealer-ID-er bekreftet fungerende mot squid-api.tjek.com (aug. 2026) —
+# se modul-docstring for hvordan de ble funnet/verifisert.
 CHAINS = [
-    Chain(
-        key="rema1000",
-        display_name="REMA 1000",
-        mattilbud_url="https://mattilbud.no/kundeaviser/rema-1000-no",
-        fallback_url="https://rema.no/kundeavis",
-    ),
-    Chain(
-        key="kiwi",
-        display_name="KIWI",
-        mattilbud_url="https://mattilbud.no/kundeaviser/kiwi-no",
-        fallback_url="https://kiwi.no/",
-    ),
-    Chain(
-        key="coop-extra",
-        display_name="Coop Extra",
-        mattilbud_url="https://mattilbud.no/kundeaviser/extra-no",
-        fallback_url="https://coop.no/",
-    ),
-    Chain(
-        key="meny",
-        display_name="Meny",
-        mattilbud_url="https://mattilbud.no/kundeaviser/meny-no",
-        fallback_url="https://meny.no/",
-    ),
-    Chain(
-        key="spar",
-        display_name="Spar",
-        mattilbud_url="https://mattilbud.no/kundeaviser/spar-no",
-        fallback_url="https://spar.no/",
-    ),
-    Chain(
-        key="bunnpris",
-        display_name="Bunnpris",
-        mattilbud_url="https://mattilbud.no/kundeaviser/bunnpris-no",
-        fallback_url="https://bunnpris.no/",
-    ),
+    Chain(key="rema1000", display_name="REMA 1000", dealer_id="faa0Ym"),
+    Chain(key="kiwi", display_name="KIWI", dealer_id="257bxm"),
+    Chain(key="coop-extra", display_name="Coop Extra", dealer_id="80742m"),
+    Chain(key="meny", display_name="Meny", dealer_id="4333pm"),
+    Chain(key="spar", display_name="Spar", dealer_id="c062vm"),
+    Chain(key="bunnpris", display_name="Bunnpris", dealer_id="5b11sm"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -169,69 +131,55 @@ def validate_pdf(path: Path) -> bool:
     return header == b"%PDF-"
 
 
-def download_binary(url: str, dest: Path) -> bool:
+def hent_siste_katalog(dealer_id: str) -> Optional[dict]:
+    """Henter metadata for nyeste kundeavis for en gitt dealer_id via Tjek
+    sitt offentlige REST-API. Returnerer katalog-dict (id, label, run_from,
+    run_till, page_count, pdf_url, ...) eller None hvis ingen katalog
+    finnes eller kallet feiler."""
+    url = f"{TJEK_API_BASE}/catalogs?dealer_id={dealer_id}&order_by=-publication_date&offset=0&limit=1"
     try:
         r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+    except requests.RequestException as e:
+        logging.warning(f"Klarte ikke å hente katalogliste for dealer_id={dealer_id}: {e}")
+        return None
+    return data[0] if data else None
+
+
+def hent_sidebilder(catalog_id: str) -> list:
+    """Henter listen over sidebilde-URLer (700px bredde) for en katalog,
+    i siderekkefølge, via Tjek sitt /pages-endepunkt."""
+    url = f"{TJEK_API_BASE}/catalogs/{catalog_id}/pages?w=1000"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        sider = r.json()
+    except requests.RequestException as e:
+        logging.warning(f"Klarte ikke å hente sidebilder for katalog {catalog_id}: {e}")
+        return []
+    urler = []
+    for side in sider:
+        url_ = side.get("view") or side.get("zoom") or side.get("thumb")
+        if url_:
+            urler.append(url_)
+    return urler
+
+
+def last_ned_pdf_direkte(pdf_url: str, dest: Path) -> bool:
+    try:
+        r = requests.get(pdf_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
         r.raise_for_status()
         dest.write_bytes(r.content)
         return validate_pdf(dest)
     except requests.RequestException as e:
-        logging.warning(f"Nedlasting feilet ({url}): {e}")
+        logging.warning(f"PDF-nedlasting feilet ({pdf_url}): {e}")
         return False
-
-
-def find_pdf_link_in_html(html: str, base_url: str) -> Optional[str]:
-    """Enkel leting etter en .pdf-lenke som ser ut som en kundeavis, både i
-    <a href> og i rå PDF-URLer skjult i JS/JSON-blokker på siden."""
-    soup = BeautifulSoup(html, "html.parser")
-    candidates = [a["href"] for a in soup.find_all("a", href=True)
-                  if re.search(r"\.pdf($|\?)", a["href"], re.IGNORECASE)]
-    candidates += re.findall(r'https?://[^\s"\']+\.pdf', html)
-    if not candidates:
-        return None
-    prioritized = [c for c in candidates if re.search(r"kundeavis|tilbud", c, re.IGNORECASE)]
-    chosen = prioritized[0] if prioritized else candidates[0]
-    if chosen.startswith("//"):
-        chosen = "https:" + chosen
-    elif chosen.startswith("/"):
-        chosen = urljoin(base_url, chosen)
-    return chosen
-
-
-def find_page_image_urls_in_html(html: str) -> list:
-    """Best-effort-forsøk på å finne en serie sidebilder for en kundeavis
-    fra en "digital avis"-plattform (f.eks. Tjek/tidl. ShopGun, som ligger
-    bak mattilbud.no). Slike plattformer legger ofte katalogens sidebilder
-    som en liste med bilde-URLer i en innebygd JSON-blokk på siden.
-
-    Dette er en GENERISK heuristikk — IKKE verifisert mot den faktiske
-    JSON-strukturen til noen bestemt plattform (ingen nettverkstilgang til
-    mattilbud.no i miljøet dette ble skrevet i). Den leter etter alle
-    bilde-URLer i HTML-en, grupperer dem etter "mønster" (samme URL med
-    tall erstattet av #), og returnerer den største gruppen — siden
-    sidebilder typisk deler samme sti/CDN og bare varierer i et tall
-    (side- eller bilde-ID). Hvis dette ikke finner riktige bilder på en
-    gitt side, må logikken justeres etter å ha inspisert siden i
-    nettleseren (F12 → Network/Sources)."""
-    urls = re.findall(r'https?://[^\s"\'\\]+\.(?:jpe?g|png|webp)(?:\?[^\s"\'\\]*)?', html, re.IGNORECASE)
-    if not urls:
-        return []
-
-    grupper = {}
-    for url in urls:
-        monster = re.sub(r"\d+", "#", url)
-        grupper.setdefault(monster, [])
-        if url not in grupper[monster]:
-            grupper[monster].append(url)
-
-    storste_gruppe = max(grupper.values(), key=len)
-    return storste_gruppe if len(storste_gruppe) >= 2 else []
 
 
 def images_to_pdf(image_urls: list, dest: Path) -> bool:
     """Laster ned en liste med bilde-URLer i rekkefølge og slår dem sammen
-    til én PDF (ett bilde per side). Brukes når kundeavisen leveres som en
-    serie sidebilder i stedet for én ferdig PDF-fil."""
+    til én PDF (ett bilde per side)."""
     bilder = []
     url = None
     try:
@@ -253,147 +201,49 @@ def images_to_pdf(image_urls: list, dest: Path) -> bool:
     return validate_pdf(dest)
 
 
-def dismiss_cookie_banner(page) -> bool:
-    """Prøver å lukke cookie-samtykke-banneret på flere måter, og logger
-    tydelig hva som skjer i stedet for å feile stille."""
-    page.wait_for_timeout(1500)  # gi banneret tid til å rekke å tegnes opp
-
-    attempts = [
-        lambda: page.get_by_role("dialog").get_by_role("button", name="Godta", exact=False),
-        lambda: page.get_by_role("button", name="Godta", exact=False),
-        lambda: page.get_by_role("button", name="Kun nødvendige", exact=False),
-        lambda: page.locator("button:has-text('Godta')"),
-        lambda: page.locator("#onetrust-accept-btn-handler"),
-        lambda: page.locator("#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"),
-    ]
-
-    for i, get_locator in enumerate(attempts):
-        try:
-            locator = get_locator().first
-            if locator.count() == 0:
-                continue
-            locator.wait_for(state="visible", timeout=3000)
-            locator.click(timeout=3000, force=True)
-            page.wait_for_timeout(1000)
-            logging.info(f"Cookie-banner lukket med forsøk #{i}")
-            return True
-        except Exception as e:
-            logging.info(f"Forsøk #{i} feilet: {e}")
-            continue
-
-    # Siste utvei: fjern selve dialog-elementet direkte fra siden med JavaScript,
-    # uansett hvilken knappetekst det bruker
-    try:
-        page.evaluate("document.querySelectorAll('[role=\"dialog\"]').forEach(el => el.remove())")
-        page.wait_for_timeout(500)
-        logging.info("Fjernet dialog-element direkte via JavaScript (brute force).")
-        return True
-    except Exception as e:
-        logging.warning(f"Klarte ikke å fjerne banneret i det hele tatt: {e}")
-        return False
-
-
-def _chromium_launch_kwargs() -> dict:
-    """Playwrights normale `playwright install chromium` legger nettleseren
-    under PLAYWRIGHT_BROWSERS_PATH med et revisjonsnummer som må matche
-    den installerte playwright-pakken nøyaktig. I enkelte miljøer (f.eks.
-    sandkasser med begrenset nettverkstilgang) ligger det i stedet en
-    forhåndsinstallert Chromium på en fast sti under samme mappe, med en
-    `chromium`-symlink som peker på den faktiske kjørbare filen. Bruk den
-    hvis den finnes, ellers la Playwright bruke sin vanlige oppdagelse."""
-    browsers_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if browsers_path:
-        candidate = Path(browsers_path) / "chromium"
-        if candidate.exists():
-            return {"executable_path": str(candidate)}
-    return {}
-
-
-# ---------------------------------------------------------------------------
-# NEDLASTINGSSTRATEGIER
-# ---------------------------------------------------------------------------
-
-def strategy_browser_print(url: str, display_name: str, dest: Path) -> bool:
-    """Universalstrategi: rendre en side i en headless nettleser og eksporter
-    til PDF. Krever ikke at vi finner en spesifikk PDF-ressurs, men fanger
-    ikke nødvendigvis alle sidene i en bla-i-avis-widget (se begrensning
-    øverst i filen)."""
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(**_chromium_launch_kwargs())
-            page = browser.new_page()
-            page.goto(url, timeout=30_000, wait_until="networkidle")
-            dismiss_cookie_banner(page)
-            page.pdf(path=str(dest), format="A4", print_background=True)
-            browser.close()
-        return validate_pdf(dest)
-    except PlaywrightTimeout as e:
-        logging.warning(f"[{display_name}] Playwright timeout: {e}")
-        return False
-    except Exception as e:
-        logging.warning(f"[{display_name}] Browser-print feilet: {e}")
-        return False
-
-
-def strategy_mattilbud(chain: Chain, dest: Path) -> bool:
-    """Henter kundeavisen fra mattilbud.no — primærkilden for alle kjeder.
-    mattilbud.no (og søsterplattformen etilbudsavis.no) kjører på Tjek
-    (tidl. ShopGun) sin kundeavis-plattform, som viser hver kjedes
-    kundeavis på en fast URL (f.eks. mattilbud.no/kundeaviser/kiwi-no).
-    URL-ene i chain.mattilbud_url er bekreftet å eksistere (funnet via
-    websøk). mattilbud.no er en JS-tung SPA — diagnostisert mot ekte side
-    (aug. 2026): rett etter "networkidle" var page.content() bare ~500
-    tegn (en tom skjelett-side), altså ikke ferdig rendret ennå. Derfor en
-    ekstra fast ventetid før vi leser innholdet, i tillegg til
-    "networkidle".
-
-    Prøver i rekkefølge: (1) en direkte PDF-lenke på siden, (2) en serie
-    sidebilder funnet av find_page_image_urls_in_html() satt sammen til én
-    PDF — dette er den interessante biten, siden det kan fange ALLE
-    sidene i avisen i stedet for bare gjeldende visning, (3) vanlig
-    browser-print av siden som siste utvei (kun gjeldende visning)."""
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(**_chromium_launch_kwargs())
-            page = browser.new_page()
-            page.goto(chain.mattilbud_url, timeout=30_000, wait_until="networkidle")
-            dismiss_cookie_banner(page)
-            page.wait_for_timeout(4000)  # la SPA-en rekke å rendre innholdet
-            html = page.content()
-            browser.close()
-    except Exception as e:
-        logging.warning(f"[{chain.display_name}] Klarte ikke å laste mattilbud.no: {e}")
-        return False
-
-    pdf_url = find_pdf_link_in_html(html, chain.mattilbud_url)
-    if pdf_url:
-        logging.info(f"[{chain.display_name}] Fant PDF-lenke på mattilbud.no: {pdf_url}")
-        if download_binary(pdf_url, dest):
-            return True
-
-    bilde_urler = find_page_image_urls_in_html(html)
-    if bilde_urler:
-        logging.info(f"[{chain.display_name}] Fant {len(bilde_urler)} sidebilder på mattilbud.no — setter sammen til PDF.")
-        if images_to_pdf(bilde_urler, dest):
-            return True
-        logging.warning(f"[{chain.display_name}] Klarte ikke å sette sammen sidebildene til PDF.")
-
-    logging.info(f"[{chain.display_name}] Fant verken PDF-lenke eller sidebilder på mattilbud.no — faller tilbake til browser-print (kun gjeldende visning).")
-    return strategy_browser_print(chain.mattilbud_url, chain.display_name, dest)
-
-
-def strategy_fallback(chain: Chain, dest: Path) -> bool:
-    """Siste utvei hvis mattilbud.no feiler helt: printer kjedens egen
-    offisielle side direkte."""
-    if not chain.fallback_url:
-        return False
-    logging.info(f"[{chain.display_name}] Prøver fallback-kilde (kjedens egen side): {chain.fallback_url}")
-    return strategy_browser_print(chain.fallback_url, chain.display_name, dest)
-
-
 # ---------------------------------------------------------------------------
 # HOVEDLOGIKK
 # ---------------------------------------------------------------------------
+
+def hent_kundeavis(chain: Chain, dest: Path) -> bool:
+    """Henter nyeste kundeavis for en kjede via Tjek sitt offentlige
+    REST-API. Prøver først direkte PDF-nedlasting (catalog["pdf_url"]), men
+    de fleste kataloger mangler dette feltet eller gir 404 der det finnes
+    (trolig "incito"-format uten fast PDF-representasjon). Faller da
+    tilbake til å hente alle sidebildene enkeltvis og sette dem sammen til
+    én PDF med Pillow — bekreftet å fungere for alle 6 kjeder (aug. 2026)."""
+    catalog = hent_siste_katalog(chain.dealer_id)
+    if not catalog:
+        logging.error(f"[{chain.display_name}] Fant ingen kundeavis for dealer_id={chain.dealer_id}")
+        return False
+
+    label = catalog.get("label") or "(uten navn)"
+    run_from = (catalog.get("run_from") or "?")[:10]
+    run_till = (catalog.get("run_till") or "?")[:10]
+    page_count = catalog.get("page_count", "?")
+    logging.info(
+        f"[{chain.display_name}] Fant katalog {catalog.get('id')} — {label!r}, "
+        f"gyldig {run_from} til {run_till}, {page_count} sider, "
+        f"{catalog.get('offer_count', '?')} tilbud"
+    )
+
+    pdf_url = catalog.get("pdf_url")
+    if pdf_url and last_ned_pdf_direkte(pdf_url, dest):
+        logging.info(f"[{chain.display_name}] Lastet ned direkte PDF fra Tjek-API.")
+        return True
+
+    bilde_urler = hent_sidebilder(catalog["id"])
+    if not bilde_urler:
+        logging.error(f"[{chain.display_name}] Fant ingen sidebilder for katalog {catalog.get('id')}")
+        return False
+
+    if images_to_pdf(bilde_urler, dest):
+        logging.info(f"[{chain.display_name}] Satte sammen {len(bilde_urler)} sidebilder til PDF.")
+        return True
+
+    logging.error(f"[{chain.display_name}] Klarte ikke å sette sammen sidebilder til PDF.")
+    return False
+
 
 def run():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -409,16 +259,14 @@ def run():
         dest = folder / f"{chain.key}_{REGION_NAVN.lower()}_{week_label}_{start_date}_{end_date}.pdf"
         logging.info(f"=== {chain.display_name} ===")
 
-        success = strategy_mattilbud(chain, dest)
-        if not success:
-            success = strategy_fallback(chain, dest)
+        success = hent_kundeavis(chain, dest)
 
         if success:
             status["resultater"][chain.key] = {"status": "ok", "fil": str(dest)}
             logging.info(f"[{chain.display_name}] OK -> {dest}")
         else:
             status["resultater"][chain.key] = {"status": "feilet"}
-            logging.error(f"[{chain.display_name}] Klarte ikke å hente kundeavis (heller ikke fallback).")
+            logging.error(f"[{chain.display_name}] Klarte ikke å hente kundeavis.")
 
     (folder / "_status.json").write_text(
         json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8"
