@@ -21,7 +21,7 @@
            run: pip install requests Pillow
 
          - name: Kjør kundeavis-scriptet
-           run: python kundeavis_bot.py
+           run: python debug_visual.py
 
          # Kjører Claude Code direkte på runneren (som allerede har full
          # nettilgang og filene på disk) rett etter at PDF-ene er generert.
