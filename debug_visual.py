@@ -14,7 +14,6 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 TARGETS = [
     ("rema1000", "faa0Ym"),
-    ("bunnpris", "5b11sm"),
 ]
 PAGES_PER_CHAIN = 4
 
