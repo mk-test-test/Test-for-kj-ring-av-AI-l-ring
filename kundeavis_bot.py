@@ -68,6 +68,7 @@ PLANLAGT KJØRING — Windows (Task Scheduler):
 import io
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -83,12 +84,21 @@ from PIL import Image
 REGION_NAVN = "Stavanger"  # kun et menneskelesbart navn i mappe-/filnavn — se KJENTE BEGRENSNINGER #1
 
 OUTPUT_ROOT = Path("kundeaviser")
+LATEST_PDF_DIR = OUTPUT_ROOT / "latest"  # fast sti, overskrives hver uke — se skriv_latest_json()
 MIN_PDF_SIZE_BYTES = 100_000  # ~100 KB — enkel sanity-sjekk av ferdig PDF
 REQUEST_TIMEOUT = 20
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 HEADERS = {"User-Agent": USER_AGENT}
 
 TJEK_API_BASE = "https://squid-api.tjek.com/v2"
+
+# Brukes til å bygge en stabil, offentlig rå-URL til hver kjedes nyeste PDF
+# (kundeaviser/latest/<key>.pdf), slik at eksterne AI-verktøy (f.eks. et
+# Claude Project) kan hente og lese PDF-en direkte via raw.githubusercontent.com
+# — Claude sitt web-fetch-verktøy støtter dokumentert HTML og PDF, men ikke
+# rå bildefiler, så en kundeavis satt sammen av enkeltbilder (som sider-listen
+# i latest.json peker til) kan ikke leses direkte av et slikt verktøy.
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/mk-test-test/Test-for-kj-ring-av-AI-l-ring/main"
 
 
 @dataclass
@@ -264,15 +274,20 @@ def hent_kundeavis(chain: Chain, dest: Path) -> Optional[dict]:
 
 def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder: dict):
     """Skriver kundeaviser/latest.json — en fast fil (samme filnavn/sti hver
-    uke) med Tjek sine egne, offentlige sidebilde-URLer for hver kjede.
+    uke) med metadata og lenker for hver kjede: både Tjek sine egne,
+    offentlige sidebilde-URLer ("sider") OG en stabil pdf_url som peker til
+    kundeaviser/latest/<key>.pdf i dette repoet (se run()).
 
     Formålet er å gi en ekstern AI-bot (f.eks. et Claude Project) en STABIL
     URL den kan hente for å alltid få denne ukens tilbud, uten at boten selv
     trenger å konstruere noen URL — noe Claude sitt web-fetch-verktøy ikke
     støtter (den kan kun hente URLer som allerede står i samtalen/tidligere
-    verktøyresultater). Filen inneholder KUN lenker til Tjek sine egne
-    bilder, ikke kopier av innholdet — se .gitignore for hvorfor selve
-    PDF-ene ikke committes til git."""
+    verktøyresultater). pdf_url finnes fordi web-fetch-verktøyet dokumentert
+    støtter HTML og PDF, men ikke rå bildefiler — sider-listen alene er
+    derfor ikke direkte lesbar for slike verktøy. Se .gitignore for
+    begrunnelsen for at nettopp kundeaviser/latest/*.pdf (i motsetning til
+    de øvrige, tidsstemplede PDF-ene) er et bevisst unntak fra regelen om at
+    kjedenes opphavsrettsbeskyttede innhold ikke skal committes til git."""
     data = {
         "uke": week_label,
         "region": REGION_NAVN,
@@ -289,6 +304,7 @@ def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder: d
 def run():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    LATEST_PDF_DIR.mkdir(parents=True, exist_ok=True)
     folder, week_label, start_date, end_date = get_week_folder()
     status = {
         "uke": week_label,
@@ -307,12 +323,17 @@ def run():
         if info:
             status["resultater"][chain.key] = {"status": "ok", "fil": str(dest)}
             logging.info(f"[{chain.display_name}] OK -> {dest}")
+
+            latest_pdf = LATEST_PDF_DIR / f"{chain.key}.pdf"
+            shutil.copyfile(dest, latest_pdf)
+
             latest_kjeder[chain.key] = {
                 "kjede_navn": chain.display_name,
                 "gyldig_fra": info["run_from"],
                 "gyldig_til": info["run_till"],
                 "tilbud_totalt": info["offer_count"],
                 "sider": info["sider"],
+                "pdf_url": f"{GITHUB_RAW_BASE}/{latest_pdf.as_posix()}",
             }
         else:
             status["resultater"][chain.key] = {"status": "feilet"}

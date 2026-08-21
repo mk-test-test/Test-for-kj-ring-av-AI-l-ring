@@ -26,23 +26,28 @@
          - name: Kjør kundeavis-scriptet
            run: python kundeavis_bot.py
 
-         # Committer og pusher kundeaviser/latest.json (fast filsti, kun
-         # Tjek sine egne bilde-lenker — ikke kopier av selve avisene, se
-         # .gitignore) tilbake til repoet. Dette gir en STABIL rå-URL
-         # (raw.githubusercontent.com/.../kundeaviser/latest.json) som en
-         # ekstern AI-bot (f.eks. et Claude Project) kan hente for å alltid
-         # få denne ukens tilbud, uten at boten selv trenger å konstruere
-         # noen URL. Hopper over commit hvis ingenting endret seg (f.eks.
-         # samme ukes kundeaviser hentet på nytt samme dag).
-         - name: Oppdater latest.json for eksterne AI-boter
+         # Committer og pusher kundeaviser/latest.json + kundeaviser/latest/*.pdf
+         # (faste filstier, overskrevet hver uke — se .gitignore for
+         # begrunnelsen for at nettopp disse PDF-ene er unntatt fra regelen om
+         # at kjedenes opphavsrettsbeskyttede innhold ellers ikke committes)
+         # tilbake til repoet. Dette gir STABILE rå-URLer
+         # (raw.githubusercontent.com/.../kundeaviser/latest.json og
+         # .../kundeaviser/latest/<kjede>.pdf) som en ekstern AI-bot (f.eks.
+         # et Claude Project) kan hente for å alltid få denne ukens tilbud,
+         # uten selv å måtte konstruere noen URL. PDF-en finnes fordi Claude
+         # sitt web-fetch-verktøy dokumentert støtter HTML/PDF, men ikke rå
+         # bildefiler (sider-lenkene i latest.json alene). Hopper over commit
+         # hvis ingenting endret seg (f.eks. samme ukes kundeaviser hentet på
+         # nytt samme dag).
+         - name: Oppdater latest.json og PDF-er for eksterne AI-boter
            run: |
              git config user.name "github-actions[bot]"
              git config user.email "github-actions[bot]@users.noreply.github.com"
-             git add kundeaviser/latest.json
+             git add kundeaviser/latest.json kundeaviser/latest/
              if git diff --cached --quiet; then
-               echo "Ingen endringer i latest.json - hopper over commit."
+               echo "Ingen endringer i latest.json/latest/ - hopper over commit."
              else
-               git commit -m "Oppdater latest.json (automatisk, uke $(date +%V))"
+               git commit -m "Oppdater latest.json og PDF-er (automatisk, uke $(date +%V))"
                git push
              fi
 

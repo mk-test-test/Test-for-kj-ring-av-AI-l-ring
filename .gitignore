@@ -1,14 +1,20 @@
-# Ukesmappene med selve PDF-ene er ignorert (se under), men
-# kundeaviser/latest.json (rett under kundeaviser/, ikke i en ukesmappe)
-# er IKKE ignorert — den committes bevisst, se skriv_latest_json() i
-# kundeavis_bot.py.
+# Ukesmappene med dagsstemplede PDF-er er ignorert (se under), men
+# kundeaviser/latest.json og kundeaviser/latest/ er IKKE ignorert — de
+# committes bevisst, se skriv_latest_json()/run() i kundeavis_bot.py.
 kundeaviser/*/
+!kundeaviser/latest/
 __pycache__/
 *.pyc
 
 # Nedlastet/scrapet innhold (skjermbilder, PDF-er) — opphavsrettsbeskyttet
 # markedsføringsmateriell fra kjedene, skal ikke havne i git-historikken.
-# (latest.json inneholder kun LENKER til Tjek sine egne, offentlige bilder —
-# ikke kopier av innholdet — og er derfor ikke omfattet av dette.)
+#
+# Unntak, bevisst valgt (aug. 2026): kundeaviser/latest/*.pdf. Formålet med
+# hele prosjektet er å gjøre disse ukentlige kundeavisene tilgjengelige for
+# et eksternt AI-verktøy — og det verktøyets web-fetch-funksjon støtter
+# dokumentert HTML og PDF, men ikke rå bildefiler (som ellers er alt vi ville
+# publisert). Én fast PDF-fil per kjede, som overskrives hver uke (ikke en
+# voksende historikk av alle ukers PDF-er), er avveiningen som ble valgt.
 debug_*.png
 *.pdf
+!kundeaviser/latest/*.pdf
