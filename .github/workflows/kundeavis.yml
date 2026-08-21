@@ -24,7 +24,7 @@
            run: pip install requests Pillow
 
          - name: Kjør kundeavis-scriptet
-           run: python debug_visual.py
+           run: python kundeavis_bot.py
 
          # Committer og pusher kundeaviser/latest.json (fast filsti, kun
          # Tjek sine egne bilde-lenker — ikke kopier av selve avisene, se
