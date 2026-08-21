@@ -1,8 +1,14 @@
-kundeaviser/
+# Ukesmappene med selve PDF-ene er ignorert (se under), men
+# kundeaviser/latest.json (rett under kundeaviser/, ikke i en ukesmappe)
+# er IKKE ignorert — den committes bevisst, se skriv_latest_json() i
+# kundeavis_bot.py.
+kundeaviser/*/
 __pycache__/
 *.pyc
 
 # Nedlastet/scrapet innhold (skjermbilder, PDF-er) — opphavsrettsbeskyttet
 # markedsføringsmateriell fra kjedene, skal ikke havne i git-historikken.
+# (latest.json inneholder kun LENKER til Tjek sine egne, offentlige bilder —
+# ikke kopier av innholdet — og er derfor ikke omfattet av dette.)
 debug_*.png
 *.pdf

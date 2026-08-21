@@ -205,48 +205,90 @@ def images_to_pdf(image_urls: list, dest: Path) -> bool:
 # HOVEDLOGIKK
 # ---------------------------------------------------------------------------
 
-def hent_kundeavis(chain: Chain, dest: Path) -> bool:
+def hent_kundeavis(chain: Chain, dest: Path) -> Optional[dict]:
     """Henter nyeste kundeavis for en kjede via Tjek sitt offentlige
     REST-API. Prøver først direkte PDF-nedlasting (catalog["pdf_url"]), men
     de fleste kataloger mangler dette feltet eller gir 404 der det finnes
     (trolig "incito"-format uten fast PDF-representasjon). Faller da
     tilbake til å hente alle sidebildene enkeltvis og sette dem sammen til
-    én PDF med Pillow — bekreftet å fungere for alle 6 kjeder (aug. 2026)."""
+    én PDF med Pillow — bekreftet å fungere for alle 6 kjeder (aug. 2026).
+
+    Returnerer en info-dict ved suksess (catalog_id, label, run_from,
+    run_till, offer_count og — når sidebilde-fallbacken ble brukt —
+    Tjek sine egne offentlige bilde-URLer under "sider"), eller None ved
+    feil. "sider"-listen brukes bl.a. til å bygge latest.json, se
+    skriv_latest_json()."""
     catalog = hent_siste_katalog(chain.dealer_id)
     if not catalog:
         logging.error(f"[{chain.display_name}] Fant ingen kundeavis for dealer_id={chain.dealer_id}")
-        return False
+        return None
 
     label = catalog.get("label") or "(uten navn)"
     run_from = (catalog.get("run_from") or "?")[:10]
     run_till = (catalog.get("run_till") or "?")[:10]
     page_count = catalog.get("page_count", "?")
+    offer_count = catalog.get("offer_count")
     logging.info(
         f"[{chain.display_name}] Fant katalog {catalog.get('id')} — {label!r}, "
         f"gyldig {run_from} til {run_till}, {page_count} sider, "
-        f"{catalog.get('offer_count', '?')} tilbud"
+        f"{offer_count} tilbud"
     )
+
+    info = {
+        "catalog_id": catalog.get("id"),
+        "label": label,
+        "run_from": run_from,
+        "run_till": run_till,
+        "offer_count": offer_count,
+        "sider": [],
+    }
 
     pdf_url = catalog.get("pdf_url")
     if pdf_url and last_ned_pdf_direkte(pdf_url, dest):
         logging.info(f"[{chain.display_name}] Lastet ned direkte PDF fra Tjek-API.")
-        return True
+        return info
 
     bilde_urler = hent_sidebilder(catalog["id"])
     if not bilde_urler:
         logging.error(f"[{chain.display_name}] Fant ingen sidebilder for katalog {catalog.get('id')}")
-        return False
+        return None
 
     if images_to_pdf(bilde_urler, dest):
         logging.info(f"[{chain.display_name}] Satte sammen {len(bilde_urler)} sidebilder til PDF.")
-        return True
+        info["sider"] = bilde_urler
+        return info
 
     logging.error(f"[{chain.display_name}] Klarte ikke å sette sammen sidebilder til PDF.")
-    return False
+    return None
+
+
+def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder: dict):
+    """Skriver kundeaviser/latest.json — en fast fil (samme filnavn/sti hver
+    uke) med Tjek sine egne, offentlige sidebilde-URLer for hver kjede.
+
+    Formålet er å gi en ekstern AI-bot (f.eks. et Claude Project) en STABIL
+    URL den kan hente for å alltid få denne ukens tilbud, uten at boten selv
+    trenger å konstruere noen URL — noe Claude sitt web-fetch-verktøy ikke
+    støtter (den kan kun hente URLer som allerede står i samtalen/tidligere
+    verktøyresultater). Filen inneholder KUN lenker til Tjek sine egne
+    bilder, ikke kopier av innholdet — se .gitignore for hvorfor selve
+    PDF-ene ikke committes til git."""
+    data = {
+        "uke": week_label,
+        "region": REGION_NAVN,
+        "oppdatert": date.today().isoformat(),
+        "gyldig_fra": start_date,
+        "gyldig_til": end_date,
+        "kjeder": kjeder,
+    }
+    (OUTPUT_ROOT / "latest.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def run():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     folder, week_label, start_date, end_date = get_week_folder()
     status = {
         "uke": week_label,
@@ -254,16 +296,24 @@ def run():
         "kjort": date.today().isoformat(),
         "resultater": {},
     }
+    latest_kjeder = {}
 
     for chain in CHAINS:
         dest = folder / f"{chain.key}_{REGION_NAVN.lower()}_{week_label}_{start_date}_{end_date}.pdf"
         logging.info(f"=== {chain.display_name} ===")
 
-        success = hent_kundeavis(chain, dest)
+        info = hent_kundeavis(chain, dest)
 
-        if success:
+        if info:
             status["resultater"][chain.key] = {"status": "ok", "fil": str(dest)}
             logging.info(f"[{chain.display_name}] OK -> {dest}")
+            latest_kjeder[chain.key] = {
+                "kjede_navn": chain.display_name,
+                "gyldig_fra": info["run_from"],
+                "gyldig_til": info["run_till"],
+                "tilbud_totalt": info["offer_count"],
+                "sider": info["sider"],
+            }
         else:
             status["resultater"][chain.key] = {"status": "feilet"}
             logging.error(f"[{chain.display_name}] Klarte ikke å hente kundeavis.")
@@ -271,6 +321,7 @@ def run():
     (folder / "_status.json").write_text(
         json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    skriv_latest_json(week_label, start_date, end_date, latest_kjeder)
     print_report(status)
 
 

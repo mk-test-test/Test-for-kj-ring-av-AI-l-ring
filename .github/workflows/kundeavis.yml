@@ -5,6 +5,9 @@
        - cron: "0 5 * * 1"   # Hver mandag kl. 05:00 UTC (ca. 06:00–07:00 norsk tid)
      workflow_dispatch:        # Lar deg trykke "Run workflow" manuelt for å teste
 
+   permissions:
+     contents: write   # trengs for å committe/pushe kundeaviser/latest.json tilbake til repoet
+
    jobs:
      hent-kundeaviser:
        runs-on: ubuntu-latest
@@ -22,6 +25,26 @@
 
          - name: Kjør kundeavis-scriptet
            run: python kundeavis_bot.py
+
+         # Committer og pusher kundeaviser/latest.json (fast filsti, kun
+         # Tjek sine egne bilde-lenker — ikke kopier av selve avisene, se
+         # .gitignore) tilbake til repoet. Dette gir en STABIL rå-URL
+         # (raw.githubusercontent.com/.../kundeaviser/latest.json) som en
+         # ekstern AI-bot (f.eks. et Claude Project) kan hente for å alltid
+         # få denne ukens tilbud, uten at boten selv trenger å konstruere
+         # noen URL. Hopper over commit hvis ingenting endret seg (f.eks.
+         # samme ukes kundeaviser hentet på nytt samme dag).
+         - name: Oppdater latest.json for eksterne AI-boter
+           run: |
+             git config user.name "github-actions[bot]"
+             git config user.email "github-actions[bot]@users.noreply.github.com"
+             git add kundeaviser/latest.json
+             if git diff --cached --quiet; then
+               echo "Ingen endringer i latest.json - hopper over commit."
+             else
+               git commit -m "Oppdater latest.json (automatisk, uke $(date +%V))"
+               git push
+             fi
 
          # Kjører Claude Code direkte på runneren (som allerede har full
          # nettilgang og filene på disk) rett etter at PDF-ene er generert.
