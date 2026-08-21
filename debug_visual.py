@@ -1,40 +1,44 @@
 #!/usr/bin/env python3
-"""Midlertidig diagnose: brukeren ga en konkret regional Coop Obs-URL
-(kundeavis-obs.coop.no/sorvest/) som kan avsløre en region-spesifikk
-Tjek/ShopGun dealer-ID, samme mønster som avdekket Bunnpris sin
-dealer-ID (data-business-id i sgn-sdk-embed på butikksiden deres)."""
+"""Midlertidig diagnose runde 2: siden bruker iPaper (ikke Tjek).
+PaperGuid=38fac292-5001-498e-9d88-871797c97743 ble funnet i og:image
+meta-taggen (base64-dekodet JSON). Let etter iPaper sitt eget
+API-/CDN-mønster for sidebilder i resten av HTML-en (scripts, iframes,
+json-blobs) som denne enkle print(html[:2000]) ikke fanget opp forrige
+runde."""
 import re
 import requests
 
 URL = "https://kundeavis-obs.coop.no/sorvest/"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+PAPER_GUID = "38fac292-5001-498e-9d88-871797c97743"
 
 r = requests.get(URL, headers=HEADERS, timeout=20, allow_redirects=True)
-print(f"status={r.status_code} final_url={r.url}")
 html = r.text
 print(f"html_length={len(html)}")
 
-# Se etter Tjek/ShopGun sin sgn-sdk-embed med data-business-id, samme som Bunnpris
-for pattern in [
-    r'data-business-id="([^"]+)"',
-    r'data-api-key="([^"]+)"',
-    r'sgn-sdk[^"]*"',
-    r'shopgun[^"]*',
-    r'tjek\.com[^"\'\s]*',
-    r'business[_-]?id["\':\s]+([a-zA-Z0-9_-]+)',
-    r'dealer[_-]?id["\':\s]+([a-zA-Z0-9_-]+)',
-]:
-    matches = re.findall(pattern, html, re.IGNORECASE)
-    if matches:
-        print(f"MATCH '{pattern}': {matches[:10]}")
+print("\n--- alle <script src=...> ---")
+for m in re.findall(r'<script[^>]+src="([^"]+)"', html):
+    print(m)
 
-# Print et utsnitt rundt evt. "sgn-sdk" eller "tjek" for kontekst
-for keyword in ["sgn-sdk", "tjek.com", "shopgun", "business-id"]:
-    idx = html.lower().find(keyword.lower())
-    if idx != -1:
-        print(f"\n--- kontekst rundt '{keyword}' (idx={idx}) ---")
-        print(html[max(0, idx - 300):idx + 300])
+print("\n--- alle <iframe ...> ---")
+for m in re.finditer(r'<iframe[^>]*>', html):
+    print(m.group())
 
-# Hvis siden er en tung SPA uten synlig HTML-innhold, print starten uansett
-print("\n--- html start (2000 tegn) ---")
-print(html[:2000])
+print("\n--- forekomster av PaperGuid i html ---")
+for m in re.finditer(re.escape(PAPER_GUID), html):
+    idx = m.start()
+    print(f"idx={idx}: ...{html[max(0,idx-150):idx+150]}...")
+
+print("\n--- forekomster av 'ipaper' (case-insensitive), med kontekst ---")
+for m in re.finditer(r'ipaper', html, re.IGNORECASE):
+    idx = m.start()
+    ctx = html[max(0, idx - 100):idx + 150]
+    if "cdn.ipaper.io/iPaper/Files" not in ctx:  # dropp favicon-støy
+        print(f"idx={idx}: ...{ctx}...")
+
+print("\n--- inline <script> blokker (uten src), forkortet ---")
+for m in re.finditer(r'<script(?![^>]*src=)[^>]*>(.*?)</script>', html, re.DOTALL):
+    body = m.group(1).strip()
+    if body:
+        print(f"[{len(body)} tegn] {body[:500]}")
+        print("...")
