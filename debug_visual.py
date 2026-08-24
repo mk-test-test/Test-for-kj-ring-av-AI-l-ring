@@ -1,48 +1,41 @@
 #!/usr/bin/env python3
-"""Diagnose runde 4 (Playwright): tidligere runder fant at iPaper sin
-side-bilde-URL ikke lot seg gjette ut fra statisk HTML/JSON alene. Denne
-bruker en ekte (headless) nettleser og lytter på ALLE nettverksresponser
-mens siden lastes, for å fange opp de faktiske URL-ene iPaper sitt
-JS-bibliotek ber om for sidebildene."""
-from playwright.sync_api import sync_playwright
+"""Diagnose runde 5 (ren requests, ingen nettleser): runde 4 (Playwright)
+fant det virkelige URL-mønsteret for iPaper sine sidebilder:
+  https://cdn.ipaper.io/iPaper/Papers/{guid}/Pages/{n}/Zoom.jpg?token=...&token_path=...&expires=...
+
+Spørsmålet nå: kan token/token_path/expires hentes direkte fra
+window.staticSettings i den statiske HTML-en (uten nettleser), og gjenbrukes
+til å bygge URL-er for ALLE sidene selv? Hvis ja, trenger vi ikke Playwright
+i selve produksjonsboten - bare requests + regex/json, akkurat som Tjek-delen.
+"""
+import json
+import re
+
+import requests
 
 URL = "https://kundeavis-obs.coop.no/sorvest/"
 
-fangede_bilder = []
-alle_ipaper_requests = []
+r = requests.get(URL, timeout=20)
+print(f"GET {URL} -> {r.status_code}, {len(r.text)} bytes")
 
-def on_response(response):
-    url = response.url
-    if "ipaper" in url.lower():
-        alle_ipaper_requests.append((response.status, url))
-    ct = response.headers.get("content-type", "")
-    if ct.startswith("image/") and "ipaper" in url.lower():
-        fangede_bilder.append((response.status, ct, url))
+m = re.search(r"window\.staticSettings\s*=\s*(\{.*?\});", r.text, re.DOTALL)
+if not m:
+    print("FANT IKKE window.staticSettings i HTML-en")
+else:
+    data = json.loads(m.group(1))
+    aws = data.get("aws", {})
+    print("paperId:", data.get("paperId"))
+    print("licenseId:", data.get("licenseId"))
+    print("aws.url:", aws.get("url"))
+    print("aws.fileUrl:", aws.get("fileUrl"))
+    print("aws.fileOptimizedUrl:", aws.get("fileOptimizedUrl"))
+    print("aws.policy:", aws.get("policy"))
 
-with sync_playwright() as p:
-    browser = p.chromium.launch()
-    page = browser.new_page()
-    page.on("response", on_response)
-
-    page.goto(URL, wait_until="networkidle", timeout=45000)
-    page.wait_for_timeout(3000)
-
-    # Prøv å klikke/scrolle for å trigge lasting av flere sider, hvis mulig
-    try:
-        page.mouse.wheel(0, 2000)
-        page.wait_for_timeout(2000)
-    except Exception as e:
-        print(f"Kunne ikke scrolle: {e}")
-
-    browser.close()
-
-print(f"Totalt antall ipaper-relaterte nettverkskall: {len(alle_ipaper_requests)}")
-print(f"Antall FAKTISKE bilderesponser (content-type=image/*): {len(fangede_bilder)}")
-
-print("\n--- alle ipaper-URLer (første 40) ---")
-for status, url in alle_ipaper_requests[:40]:
-    print(f"{status} {url}")
-
-print("\n--- bilderesponser ---")
-for status, ct, url in fangede_bilder[:40]:
-    print(f"{status} {ct} {url}")
+    policy = aws.get("policy", "")
+    base = aws.get("url", "")
+    if policy and base:
+        for n in [1, 2, 5]:
+            test_url = f"{base}Pages/{n}/Zoom.jpg?{policy}"
+            resp = requests.get(test_url, timeout=20)
+            ct = resp.headers.get("content-type", "?")
+            print(f"Side {n}: {resp.status_code} {ct} {len(resp.content)} bytes -> {test_url}")
