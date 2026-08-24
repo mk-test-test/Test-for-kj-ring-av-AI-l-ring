@@ -24,7 +24,7 @@
            run: pip install requests Pillow
 
          - name: Kjør kundeavis-scriptet
-           run: python debug_visual.py
+           run: python kundeavis_bot.py
 
          # Committer og pusher kundeaviser/latest.json + kundeaviser/latest/*.pdf
          # (faste filstier, overskrevet hver uke — se .gitignore for
