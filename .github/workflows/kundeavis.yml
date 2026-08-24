@@ -21,10 +21,12 @@
              python-version: "3.12"
 
          - name: Installer avhengigheter
-           run: pip install requests Pillow
+           run: |
+             pip install requests Pillow playwright
+             playwright install --with-deps chromium
 
          - name: Kjør kundeavis-scriptet
-           run: python kundeavis_bot.py
+           run: python debug_visual.py
 
          # Committer og pusher kundeaviser/latest.json + kundeaviser/latest/*.pdf
          # (faste filstier, overskrevet hver uke — se .gitignore for
