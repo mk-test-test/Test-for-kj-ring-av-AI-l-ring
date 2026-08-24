@@ -2,7 +2,12 @@
 
    on:
      schedule:
-       - cron: "0 5 * * 1"   # Hver mandag kl. 05:00 UTC (ca. 06:00–07:00 norsk tid)
+       - cron: "17 5 * * 1"  # Hver mandag kl. 05:17 UTC (ca. 06:17–07:17 norsk tid).
+                              # Bevisst forskjøvet fra rundt klokkeslett (05:00): GitHub
+                              # kan forsinke schedule-triggere betydelig i timens første
+                              # minutter pga. global kø (mange repoer bruker "0 X * * *").
+                              # Sett 24.08.2026 etter at uke 34-kjøringen kom 3 timer for
+                              # sent (kl. 08:03 i stedet for 05:00).
      workflow_dispatch:        # Lar deg trykke "Run workflow" manuelt for å teste
 
    permissions:
