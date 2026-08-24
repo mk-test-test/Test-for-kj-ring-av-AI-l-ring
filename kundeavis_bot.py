@@ -23,7 +23,14 @@ GitHub-prosjekter (bl.a. holgersetten/ukeshandel.no) som bruker samme API.
 Alle 6 dealer-ID-ene under er BEKREFTET fungerende (aug. 2026, kjørt fra
 GitHub Actions): hver ga en ekte, aktuell katalog for inneværende uke med
 13–31 sider og 100–239 tilbud, og nedlasting av sidebilder ga gyldige
-JPEG-filer. Se hent_kundeavis() for detaljer om hvordan PDF-en bygges.
+JPEG-filer. Se hent_kundeavis_tjek() for detaljer om hvordan PDF-en bygges.
+
+En 7. kjede, Coop Obs (Mariero), er lagt til på en HELT ANNEN plattform
+("iPaper", ikke Tjek) — Coop Obs eksponerer ingen dealer_id eller
+REST-API. I stedet leses en signert tilgangs-"policy" ut av den vanlige
+HTML-siden for den regionale kundeavisen (kundeavis-obs.coop.no/sorvest/),
+og brukes til å bygge sidebilde-URLer direkte. Se hent_kundeavis_ipaper()
+for detaljer, inkludert hvordan URL-mønsteret ble funnet.
 
 KJENTE BEGRENSNINGER
 ---------------------
@@ -47,6 +54,10 @@ KJENTE BEGRENSNINGER
 4. dealer_id for REMA 1000 (faa0Ym) er verifisert å gi norskspråklige
    "Uke NN"-kataloger. En alternativ ID funnet i samme kilde (11deC) ga en
    dansk("Uge NN")-katalog og er IKKE brukt her.
+5. iPaper-kjeden (Coop Obs) oppgir ikke gyldighetsdato eller totalt antall
+   tilbud noe sted i den statiske HTML-en vi henter — disse feltene settes
+   derfor til "?"/None for den kjeden i status/latest.json, i motsetning
+   til de 6 Tjek-baserte kjedene.
 
 INSTALLASJON
 -------------
@@ -68,6 +79,7 @@ PLANLAGT KJØRING — Windows (Task Scheduler):
 import io
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -92,6 +104,12 @@ HEADERS = {"User-Agent": USER_AGENT}
 
 TJEK_API_BASE = "https://squid-api.tjek.com/v2"
 
+# iPaper-kjeder (foreløpig kun Coop Obs) henter ikke sidetall noe sted i den
+# statiske HTML-en, så vi prøver side 1, 2, 3, ... fortløpende til første
+# side som ikke gir et gyldig bilde tilbake. 60 er en romslig øvre grense —
+# den regionale Coop Obs-kundeavisen vi har sett hadde ca. 30 sider.
+IPAPER_MAKS_SIDER = 60
+
 # Brukes til å bygge en stabil, offentlig rå-URL til hver kjedes nyeste PDF
 # (kundeaviser/latest/<key>.pdf), slik at eksterne AI-verktøy (f.eks. et
 # Claude Project) kan hente og lese PDF-en direkte via raw.githubusercontent.com
@@ -105,18 +123,28 @@ GITHUB_RAW_BASE = "https://raw.githubusercontent.com/mk-test-test/Test-for-kj-ri
 class Chain:
     key: str                    # brukt i filnavn, f.eks. "rema1000"
     display_name: str           # f.eks. "REMA 1000"
-    dealer_id: str              # Tjek/ShopGun sin dealer-ID for kjeden
+    platform: str                # "tjek" eller "ipaper" — avgjør hvilken henter som brukes
+    dealer_id: Optional[str] = None    # kun "tjek": Tjek/ShopGun sin dealer-ID for kjeden
+    ipaper_url: Optional[str] = None   # kun "ipaper": URL til den regionale kundeavis-siden
 
 
 # Dealer-ID-er bekreftet fungerende mot squid-api.tjek.com (aug. 2026) —
-# se modul-docstring for hvordan de ble funnet/verifisert.
+# se modul-docstring for hvordan de ble funnet/verifisert. Coop Obs bruker
+# en helt annen plattform (iPaper) og har derfor ingen dealer_id, se
+# hent_kundeavis_ipaper().
 CHAINS = [
-    Chain(key="rema1000", display_name="REMA 1000", dealer_id="faa0Ym"),
-    Chain(key="kiwi", display_name="KIWI", dealer_id="257bxm"),
-    Chain(key="coop-extra", display_name="Coop Extra", dealer_id="80742m"),
-    Chain(key="meny", display_name="Meny", dealer_id="4333pm"),
-    Chain(key="spar", display_name="Spar", dealer_id="c062vm"),
-    Chain(key="bunnpris", display_name="Bunnpris", dealer_id="5b11sm"),
+    Chain(key="rema1000", display_name="REMA 1000", platform="tjek", dealer_id="faa0Ym"),
+    Chain(key="kiwi", display_name="KIWI", platform="tjek", dealer_id="257bxm"),
+    Chain(key="coop-extra", display_name="Coop Extra", platform="tjek", dealer_id="80742m"),
+    Chain(key="meny", display_name="Meny", platform="tjek", dealer_id="4333pm"),
+    Chain(key="spar", display_name="Spar", platform="tjek", dealer_id="c062vm"),
+    Chain(key="bunnpris", display_name="Bunnpris", platform="tjek", dealer_id="5b11sm"),
+    Chain(
+        key="coop-obs",
+        display_name="Coop Obs (Mariero)",
+        platform="ipaper",
+        ipaper_url="https://kundeavis-obs.coop.no/sorvest/",
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -216,6 +244,15 @@ def images_to_pdf(image_urls: list, dest: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def hent_kundeavis(chain: Chain, dest: Path) -> Optional[dict]:
+    """Henter nyeste kundeavis for en kjede og lagrer den som PDF på dest.
+    Dispatcher til riktig plattform-spesifikk henter basert på
+    chain.platform — se hent_kundeavis_tjek() og hent_kundeavis_ipaper()."""
+    if chain.platform == "ipaper":
+        return hent_kundeavis_ipaper(chain, dest)
+    return hent_kundeavis_tjek(chain, dest)
+
+
+def hent_kundeavis_tjek(chain: Chain, dest: Path) -> Optional[dict]:
     """Henter nyeste kundeavis for en kjede via Tjek sitt offentlige
     REST-API. Prøver først direkte PDF-nedlasting (catalog["pdf_url"]), men
     de fleste kataloger mangler dette feltet eller gir 404 der det finnes
@@ -270,6 +307,107 @@ def hent_kundeavis(chain: Chain, dest: Path) -> Optional[dict]:
 
     logging.error(f"[{chain.display_name}] Klarte ikke å sette sammen sidebilder til PDF.")
     return None
+
+
+IPAPER_STATIC_SETTINGS_RE = re.compile(r"window\.staticSettings\s*=\s*(\{.*?\});", re.DOTALL)
+
+
+def hent_ipaper_meta(url: str) -> Optional[dict]:
+    """Henter en iPaper-kundeavis-side (vanlig HTML, ikke noe REST-API) og
+    parser window.staticSettings — et inline <script>-JSON-objekt siden selv
+    bruker til å konfigurere sidevisningen. Returnerer dict med bl.a.
+    paperId og et "aws"-felt (url/policy) som brukes til å bygge
+    sidebilde-URLer, eller None hvis siden ikke svarer eller mangler
+    forventet struktur."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        logging.warning(f"Klarte ikke å hente iPaper-side {url}: {e}")
+        return None
+    m = IPAPER_STATIC_SETTINGS_RE.search(r.text)
+    if not m:
+        logging.warning(f"Fant ikke window.staticSettings i {url}")
+        return None
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError as e:
+        logging.warning(f"Kunne ikke parse window.staticSettings fra {url}: {e}")
+        return None
+
+
+def hent_kundeavis_ipaper(chain: Chain, dest: Path) -> Optional[dict]:
+    """Henter nyeste kundeavis for en iPaper-basert kjede (foreløpig kun
+    Coop Obs). iPaper er en helt annen plattform enn Tjek: ingen dealer_id
+    eller REST-API. I stedet henter vi den regionale kundeavis-siden
+    (chain.ipaper_url) som vanlig HTML, leser ut en signert tilgangs-
+    "policy" fra window.staticSettings.aws (se hent_ipaper_meta()), og
+    bruker den til å bygge sidebilde-URLer på mønsteret
+    "{aws.url}Pages/{n}/Zoom.jpg?{aws.policy}".
+
+    Dette URL-mønsteret ble reverse-engineert ved å lytte på ALLE
+    nettverksresponser i en ekte (headless) nettleser (Playwright) mens
+    siden lastet — tre tidligere runder med statisk gjetting av filnavn
+    (f.eks. "Pages/1.jpg") ga bare 404, fordi sidetallet faktisk er et eget
+    stinivå ("Pages/1/Zoom.jpg"), ikke en del av filnavnet. Mønsteret er
+    deretter bekreftet å fungere med et rent HTTP-kall UTEN nettleser
+    (aug. 2026) — derfor trengs ikke Playwright i selve produksjonsboten.
+
+    Siden oppgir ikke noe pålitelig sidetall i den statiske HTML-en, så
+    sidene hentes fortløpende (1, 2, 3, ...) til første side som ikke gir
+    et gyldig bilde tilbake (se IPAPER_MAKS_SIDER).
+
+    Returnerer et info-dict på samme form som hent_kundeavis_tjek(), men
+    med run_from/run_till="?" og offer_count=None — iPaper-siden oppgir
+    ikke gyldighetsdato eller tilbudstall noe sted."""
+    meta = hent_ipaper_meta(chain.ipaper_url)
+    if not meta:
+        logging.error(f"[{chain.display_name}] Fant ikke iPaper-metadata på {chain.ipaper_url}")
+        return None
+
+    aws = meta.get("aws", {})
+    base_url = aws.get("url")
+    policy = aws.get("policy")
+    if not base_url or not policy:
+        logging.error(f"[{chain.display_name}] Mangler aws.url/aws.policy i iPaper-metadata")
+        return None
+
+    bilder = []
+    sider = []
+    for n in range(1, IPAPER_MAKS_SIDER + 1):
+        side_url = f"{base_url}Pages/{n}/Zoom.jpg?{policy}"
+        try:
+            r = requests.get(side_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            logging.warning(f"[{chain.display_name}] Feil ved henting av side {n}: {e}")
+            break
+        if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
+            break
+        bilder.append(Image.open(io.BytesIO(r.content)).convert("RGB"))
+        sider.append(side_url)
+
+    if not bilder:
+        logging.error(f"[{chain.display_name}] Fant ingen sidebilder via iPaper")
+        return None
+
+    try:
+        bilder[0].save(str(dest), save_all=True, append_images=bilder[1:])
+    except Exception as e:
+        logging.error(f"[{chain.display_name}] Kunne ikke sette sammen sidebilder til PDF: {e}")
+        return None
+    if not validate_pdf(dest):
+        logging.error(f"[{chain.display_name}] Ferdig PDF besto ikke validering")
+        return None
+
+    logging.info(f"[{chain.display_name}] Satte sammen {len(bilder)} sidebilder til PDF (iPaper).")
+    return {
+        "catalog_id": meta.get("paperId"),
+        "label": chain.display_name,
+        "run_from": "?",
+        "run_till": "?",
+        "offer_count": None,
+        "sider": sider,
+    }
 
 
 def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder: dict):
