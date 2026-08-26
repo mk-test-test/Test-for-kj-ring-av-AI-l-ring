@@ -59,6 +59,18 @@ KJENTE BEGRENSNINGER
    derfor til "?"/None for den kjeden i status/latest.json, i motsetning
    til de 6 Tjek-baserte kjedene.
 
+ROTASJON (sep. 2026)
+---------------------
+PDF-ene for alle 7 kjeder hentes fortsatt hver kjøring (billig — bare HTTP
++ Pillow). Men den kostbare OCR/vision-ekstraksjonen til strukturert JSON
+(se kundeavis.yml sitt "Strukturer tilbud med Claude"-steg) kjøres kun for
+PRIMÆR_KJEDER (Coop Obs, Coop Extra, Meny) pluss ÉN av ROTASJON_KJEDER
+(REMA 1000, KIWI, Spar, Bunnpris) om gangen, valgt ut fra ISO-ukenummeret —
+se aktive_kjeder_denne_uken(). Sett miljøvariabelen FULL_KJORING=true for
+å ekstrahere alle 7 kjeder uansett uke (workflow_dispatch-input i
+kundeavis.yml). latest.json sitt "aktive_kjeder_denne_uken"-felt sier
+nøyaktig hvilke kjeder som ble ekstrahert denne uken.
+
 INSTALLASJON
 -------------
     pip install requests Pillow
@@ -79,6 +91,7 @@ PLANLAGT KJØRING — Windows (Task Scheduler):
 import io
 import json
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -147,6 +160,36 @@ CHAINS = [
     ),
 ]
 
+# Rotasjon (sep. 2026): kjøringer i uke 35 viste at REMA 1000 og KIWI
+# konsekvent bidro minst til bekreftet besparelse når Coop Obs, Coop Extra
+# og Meny allerede dekket behovet. PRIMÆR-kjedene hentes/ekstraheres HVER
+# uke; ROTASJON-kjedene hentes/ekstraheres kun én om gangen (roterer på
+# ISO-ukenummer), med mindre FULL_KJORING er satt (se under). Dette
+# reduserer hvor mange kjeder den kostbare OCR/vision-ekstraksjonen
+# (kundeavis.yml sitt "Strukturer tilbud med Claude"-steg) må behandle
+# hver uke — selve PDF-hentingen her er billig (kun HTTP + Pillow) og gjøres
+# fortsatt for alle 7, slik at latest.json/PDF-ene er tilgjengelige for
+# manuell sjekk av en hvilken som helst kjede når som helst.
+PRIMÆR_KJEDER = {"coop-obs", "coop-extra", "meny"}
+ROTASJON_KJEDER = ["rema1000", "kiwi", "spar", "bunnpris"]
+
+# Sett FULL_KJORING=true (miljøvariabel, se workflow_dispatch-input i
+# kundeavis.yml) for å ekstrahere alle 7 kjeder denne uken, uavhengig av
+# rotasjon — f.eks. ved en spesiell handleuke eller for å teste alle kjeder.
+FULL_KJORING = os.environ.get("FULL_KJORING", "").strip().lower() in ("1", "true", "yes")
+
+
+def aktive_kjeder_denne_uken(iso_week: int) -> set:
+    """Returnerer nøklene til kjedene som skal EKSTRAHERES (strukturert
+    JSON) denne uken: alle PRIMÆR-kjeder pluss én ROTASJON-kjede valgt ut
+    fra ISO-ukenummeret, eller alle 7 hvis FULL_KJORING er satt. PDF-ene
+    for alle 7 kjeder hentes uansett (se run()) — rotasjonen gjelder kun
+    hvilke kjeder som sendes til den kostbare Claude-ekstraksjonen."""
+    if FULL_KJORING:
+        return {c.key for c in CHAINS}
+    aktiv_rotasjon = ROTASJON_KJEDER[iso_week % len(ROTASJON_KJEDER)]
+    return PRIMÆR_KJEDER | {aktiv_rotasjon}
+
 # ---------------------------------------------------------------------------
 # HJELPEFUNKSJONER
 # ---------------------------------------------------------------------------
@@ -158,7 +201,7 @@ def get_week_folder():
     sunday = monday + timedelta(days=6)
     folder = OUTPUT_ROOT / f"{iso_year}-uke{iso_week:02d}"
     folder.mkdir(parents=True, exist_ok=True)
-    return folder, f"uke{iso_week:02d}", monday.isoformat(), sunday.isoformat()
+    return folder, f"uke{iso_week:02d}", monday.isoformat(), sunday.isoformat(), iso_week
 
 
 def validate_pdf(path: Path) -> bool:
@@ -410,7 +453,7 @@ def hent_kundeavis_ipaper(chain: Chain, dest: Path) -> Optional[dict]:
     }
 
 
-def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder: dict):
+def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder_denne_uken: dict, aktive_ekstraksjon: set):
     """Skriver kundeaviser/latest.json — en fast fil (samme filnavn/sti hver
     uke) med metadata og lenker for hver kjede: både Tjek sine egne,
     offentlige sidebilde-URLer ("sider") OG en stabil pdf_url som peker til
@@ -425,16 +468,43 @@ def skriv_latest_json(week_label: str, start_date: str, end_date: str, kjeder: d
     derfor ikke direkte lesbar for slike verktøy. Se .gitignore for
     begrunnelsen for at nettopp kundeaviser/latest/*.pdf (i motsetning til
     de øvrige, tidsstemplede PDF-ene) er et bevisst unntak fra regelen om at
-    kjedenes opphavsrettsbeskyttede innhold ikke skal committes til git."""
+    kjedenes opphavsrettsbeskyttede innhold ikke skal committes til git.
+
+    MERGER med et evt. eksisterende latest.json i stedet for å overskrive
+    det helt: PDF-ene for alle 7 kjeder hentes fortsatt hver kjøring (se
+    ROTASJON i modul-docstringen — kun den kostbare Claude-ekstraksjonen
+    er rotasjonsbegrenset), men en enkelt kjede kan likevel feile en gitt
+    uke (nettverksfeil, endret dealer_id, o.l.). Uten merging ville en slik
+    forbigående feil slettet kjeden helt fra latest.json i stedet for at
+    den forrige, fortsatt gyldige, oppføringen ble stående. Hver kjede får
+    et "sist_hentet_uke"-felt som sier hvilken uke dataene faktisk er fra,
+    slik at en ekstern AI-bot kan se om en kjedes data er ferske eller
+    noen uker gamle. strukturert_url/faste_lavpriser_url peker til faste
+    stier som Claude-ekstraksjonssteget i kundeavis.yml skriver til (se
+    dette steget for skjemaet)."""
+    latest_path = OUTPUT_ROOT / "latest.json"
+    eksisterende_kjeder = {}
+    if latest_path.exists():
+        try:
+            eksisterende_kjeder = json.loads(latest_path.read_text(encoding="utf-8")).get("kjeder", {})
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    kjeder = dict(eksisterende_kjeder)
+    kjeder.update(kjeder_denne_uken)
+
     data = {
         "uke": week_label,
         "region": REGION_NAVN,
         "oppdatert": date.today().isoformat(),
         "gyldig_fra": start_date,
         "gyldig_til": end_date,
+        "aktive_kjeder_denne_uken": sorted(aktive_ekstraksjon),
+        "strukturert_url": f"{GITHUB_RAW_BASE}/kundeaviser/latest-strukturert.json",
+        "faste_lavpriser_url": f"{GITHUB_RAW_BASE}/kundeaviser/latest-faste-lavpriser.json",
         "kjeder": kjeder,
     }
-    (OUTPUT_ROOT / "latest.json").write_text(
+    latest_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
@@ -443,11 +513,19 @@ def run():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     LATEST_PDF_DIR.mkdir(parents=True, exist_ok=True)
-    folder, week_label, start_date, end_date = get_week_folder()
+    folder, week_label, start_date, end_date, iso_week = get_week_folder()
+    aktive_ekstraksjon = aktive_kjeder_denne_uken(iso_week)
+    logging.info(
+        f"Aktive kjeder for ekstraksjon denne uken ({week_label}): "
+        f"{', '.join(sorted(aktive_ekstraksjon))}"
+        + (" (FULL_KJORING)" if FULL_KJORING else "")
+    )
+
     status = {
         "uke": week_label,
         "region": REGION_NAVN,
         "kjort": date.today().isoformat(),
+        "aktive_kjeder_denne_uken": sorted(aktive_ekstraksjon),
         "resultater": {},
     }
     latest_kjeder = {}
@@ -472,6 +550,7 @@ def run():
                 "tilbud_totalt": info["offer_count"],
                 "sider": info["sider"],
                 "pdf_url": f"{GITHUB_RAW_BASE}/{latest_pdf.as_posix()}",
+                "sist_hentet_uke": week_label,
             }
         else:
             status["resultater"][chain.key] = {"status": "feilet"}
@@ -480,7 +559,7 @@ def run():
     (folder / "_status.json").write_text(
         json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    skriv_latest_json(week_label, start_date, end_date, latest_kjeder)
+    skriv_latest_json(week_label, start_date, end_date, latest_kjeder, aktive_ekstraksjon)
     print_report(status)
 
 
