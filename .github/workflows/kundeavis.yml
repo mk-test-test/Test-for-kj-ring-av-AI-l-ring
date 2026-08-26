@@ -17,6 +17,12 @@
 
    permissions:
      contents: write   # trengs for å committe/pushe kundeaviser/latest.json tilbake til repoet
+     id-token: write    # trengs av anthropics/claude-code-action for å hente en OIDC-token —
+                         # uten denne feiler steget med "Could not fetch an OIDC token", selv om
+                         # selve Anthropic-autentiseringen bruker CLAUDE_CODE_OAUTH_TOKEN (ikke
+                         # OIDC). Dette gikk upåaktet hen tidligere fordi steget kun gjorde en
+                         # valgfri, continue-on-error lett verifisering — nå er det selve
+                         # OCR/vision-ekstraksjonen som feiler stille uten denne.
 
    jobs:
      hent-kundeaviser:
