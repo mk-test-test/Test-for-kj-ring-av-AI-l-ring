@@ -161,7 +161,19 @@
          # latest-faste-lavpriser.json legges kun til hvis Claude-steget
          # over faktisk skrev dem (kan mangle ved feil/manglende secret).
          # Hopper over commit hvis ingenting endret seg.
+         #
+         # git remote set-url før push: claude-code-action-steget over
+         # konfigurerer sin EGEN, midlertidige GitHub App-token for git
+         # (den trenger det til sine egne operasjoner) og
+         # tilbakekaller/rydder opp i den i sitt post-job-steg. Hvis dette
+         # steget her stoler på det credential-oppsettet som da allerede er
+         # i endring, feiler push med "Invalid username or token" (sett i
+         # praksis 26.08.2026). Ved å eksplisitt sette remote-URL-en med
+         # GITHUB_TOKEN (repoets egen, stabile Actions-token) rett før push
+         # unngår vi den avhengigheten helt.
          - name: Oppdater latest.json, PDF-er og strukturerte tilbud for eksterne AI-boter
+           env:
+             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
            run: |
              git config user.name "github-actions[bot]"
              git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -172,6 +184,7 @@
                echo "Ingen endringer å committe."
              else
                git commit -m "Oppdater latest.json, PDF-er og strukturerte tilbud (automatisk, uke $(date +%V))"
+               git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
                git push
              fi
 
